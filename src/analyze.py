@@ -26,6 +26,23 @@ from .schema import CaseAnalysis
 
 PROMPT_PATH = REPO_ROOT / "prompts" / "system_prompt.md"
 
+_LLAMA = None
+
+
+def _get_llama():
+    """Lazy-load a local GGUF via llama-cpp-python (cached for the process)."""
+    global _LLAMA
+    if _LLAMA is None:
+        from llama_cpp import Llama
+
+        _LLAMA = Llama(
+            model_path=settings.llamacpp_model_path,
+            n_ctx=settings.ollama_num_ctx,
+            n_gpu_layers=-1,  # offload to Metal where available
+            verbose=False,
+        )
+    return _LLAMA
+
 
 def _chat(system_text: str, user_text: str, max_tokens: int = 4096, json_mode: bool = False) -> str:
     """Dispatch one chat completion to the configured provider; return raw text."""
