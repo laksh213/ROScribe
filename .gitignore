@@ -16,6 +16,11 @@ data/personal_repo/*
 !data/**/.gitkeep
 *.pdf
 
+# Generated index artifacts
+data/roscribe.db
+data/chroma/
+data/extracted/
+
 # Models / caches
 .cache/
 models/
