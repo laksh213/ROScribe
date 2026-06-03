@@ -1,11 +1,14 @@
-"""Phase 5 — Grounded analysis & structured breakdown via Claude.
+"""Phase 5 — Grounded analysis & structured breakdown.
 
-`analyze_pdf` extracts a judgment's text and asks Claude (with
-prompts/system_prompt.md) for a `CaseAnalysis` JSON, validated against the
-schema. `precedent_test` answers "can we use Case X?" using retrieved context.
-Both enforce source-fidelity and `[Case No | Page:Para]` citations.
+The LLM is pluggable via LLM_PROVIDER (see config / .env):
+  - "ollama"    local, OpenAI-compatible endpoint (default; private, zero-cost)
+  - "anthropic" Claude (highest quality / best schema adherence)
+  - "openai"    OpenAI or any OpenAI-compatible API
 
-The system prompt is sent with prompt caching, so repeated calls are cheaper.
+`analyze_pdf` extracts a judgment and returns a validated `CaseAnalysis`.
+`precedent_test` answers "can we use Case X?" using retrieved context (and your
+notes, when indexed). Both enforce source-fidelity and `[Case No | Page:Para]`
+citations.
 
 CLI:
   python -m src.analyze data/sc_judgements/<file>.pdf
@@ -24,22 +27,55 @@ from .schema import CaseAnalysis
 PROMPT_PATH = REPO_ROOT / "prompts" / "system_prompt.md"
 
 
-def _client():
-    if not settings.anthropic_api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. Add it to .env to enable Claude analysis."
+def _chat(system_text: str, user_text: str, max_tokens: int = 4096) -> str:
+    """Dispatch one chat completion to the configured provider; return raw text."""
+    provider = settings.llm_provider.lower()
+
+    if provider == "anthropic":
+        if not settings.anthropic_api_key:
+            raise RuntimeError("LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set.")
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        resp = client.messages.create(
+            model=settings.anthropic_model,
+            max_tokens=max_tokens,
+            system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_text}],
         )
-    import anthropic
+        return resp.content[0].text
 
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    # OpenAI-compatible: Ollama (local) or OpenAI
+    from openai import OpenAI
 
+    if provider == "ollama":
+        client = OpenAI(base_url=settings.ollama_base_url, api_key="ollama")
+        model = settings.llm_model
+    elif provider == "openai":
+        if not settings.openai_api_key:
+            raise RuntimeError("LLM_PROVIDER=openai but OPENAI_API_KEY is not set.")
+        client = OpenAI(api_key=settings.openai_api_key)
+        model = settings.llm_model
+    else:
+        raise RuntimeError(f"Unknown LLM_PROVIDER: {settings.llm_provider!r}")
 
-def _system_block() -> list[dict]:
-    return [{
-        "type": "text",
-        "text": PROMPT_PATH.read_text(),
-        "cache_control": {"type": "ephemeral"},  # cache the long system prompt
-    }]
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ],
+        )
+    except Exception as e:
+        if provider == "ollama":
+            raise RuntimeError(
+                f"Could not reach Ollama at {settings.ollama_base_url}. Is it running?\n"
+                f"  Try:  ollama serve   (and)   ollama pull {model}"
+            ) from e
+        raise
+    return resp.choices[0].message.content
 
 
 def _extract_json(text: str) -> dict:
@@ -50,7 +86,6 @@ def _extract_json(text: str) -> dict:
 
 
 def analyze_text(case_no: str, full_text: str) -> CaseAnalysis:
-    client = _client()
     user = (
         f"Case No: {case_no}\n\n"
         "Produce the case breakdown as ONE JSON object matching CaseAnalysis in "
@@ -59,13 +94,8 @@ def analyze_text(case_no: str, full_text: str) -> CaseAnalysis:
         "[Case No | Page:Para] using the page markers. Return ONLY the JSON.\n\n"
         f"=== JUDGMENT TEXT ===\n{full_text}"
     )
-    resp = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=4096,
-        system=_system_block(),
-        messages=[{"role": "user", "content": user}],
-    )
-    return CaseAnalysis.model_validate(_extract_json(resp.content[0].text))
+    raw = _chat(PROMPT_PATH.read_text(), user, max_tokens=4096)
+    return CaseAnalysis.model_validate(_extract_json(raw))
 
 
 def analyze_pdf(pdf_path: str) -> CaseAnalysis:
@@ -80,24 +110,17 @@ def precedent_test(case_x: str, scenario: str, k: int = 8) -> str:
 
     context = retrieve(f"{case_x} {scenario}", k=k)
     snippets = "\n\n".join(f"{h['meta'].get('anchor', '?')}\n{h['text']}" for h in context)
-    client = _client()
     user = (
         f"User scenario:\n{scenario}\n\nCandidate precedent: {case_x}\n\n"
         "Apply the Precedent Test (retrieve -> compare -> validate). Use ONLY the "
         "retrieved context; cite [Case No | Page:Para]; flag anything missing.\n\n"
         f"=== RETRIEVED CONTEXT ===\n{snippets}"
     )
-    resp = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=2048,
-        system=_system_block(),
-        messages=[{"role": "user", "content": user}],
-    )
-    return resp.content[0].text
+    return _chat(PROMPT_PATH.read_text(), user, max_tokens=2048)
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="Break down a judgment PDF with Claude.")
+    ap = argparse.ArgumentParser(description="Break down a judgment PDF with the configured LLM.")
     ap.add_argument("pdf")
     args = ap.parse_args(argv)
     try:
