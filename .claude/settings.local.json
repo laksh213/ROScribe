@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile src/*.py app/*.py tests/*.py)",
+      "WebFetch(domain:supremecourt.lk)",
+      "Bash(python3 -c \"import requests, bs4; print\\('deps OK', requests.__version__, bs4.__version__\\)\")",
+      "Bash(pip install *)",
+      "Bash(python3 -m pip install --quiet --user requests beautifulsoup4)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(./.venv/bin/pip install *)",
+      "Bash(./.venv/bin/python -c \"import requests, bs4; print\\('venv ready:', requests.__version__, bs4.__version__\\)\")",
+      "Bash(./.venv/bin/python -m src.scrape --dry-run)",
+      "Bash(.venv/bin/python -m py_compile src/*.py app/*.py tests/*.py)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/python -m pytest -q)",
+      "Bash(.venv/bin/python -c 'import json;print\\(len\\(json.load\\(open\\(\"data/manifest.json\"\\)\\)\\)\\)')",
+      "Bash(echo \"manifest records: $\\(.venv/bin/python -c 'import json;print\\(len\\(json.load\\(open\\(\"data/manifest.json\"\\)\\)\\)\\)'\\)\")",
+      "Bash(.venv/bin/python -)",
+      "Bash(.venv/bin/python -m src.ingest data/sc_judgements/sc_appeal_175_2017.pdf --out data/extracted/sc_appeal_175_2017.md --show 2)",
+      "Bash(.venv/bin/python -m src.ingest data/sc_judgements/sc_fr_272_2024.pdf --show 1)"
+    ]
+  }
+}

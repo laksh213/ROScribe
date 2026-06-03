@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Env / secrets
+.env
+*.key
+
+# Data — never commit judgments, notes, or vectors
+data/sc_judgements/*
+data/personal_repo/*
+!data/**/.gitkeep
+*.pdf
+
+# Models / caches
+.cache/
+models/
+*.bin
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Streamlit
+.streamlit/secrets.toml

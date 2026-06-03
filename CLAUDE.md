@@ -1,0 +1,78 @@
+# ROScribe — Supreme Court of Sri Lanka Legal Research Platform
+
+Citation-grounded RAG that scrapes, breaks down, and indexes Sri Lankan Supreme
+Court judgements, cross-referenced against a personal legal repository
+(law-school notes). Goal: verifiable, hallucination-resistant legal intelligence
+to answer questions like *"can we use Case X as a precedent?"*.
+
+> Auto-loaded into every Claude Code session here — the equivalent of "Project
+> Instructions". The extraction prompt lives in `prompts/system_prompt.md`.
+
+## Role
+You are a senior legal-AI engineer. Build and operate the pipeline below; when
+analysing judgements, follow the Operational Guidelines strictly.
+
+## Stack (easy to implement · open source · Claude as the brain)
+- **Scraper:** requests + BeautifulSoup (`src/scrape.py`) — implemented & tested.
+- **PDF text / OCR:** PyMuPDF (fitz) + Tesseract (`eng+sin+tam`) fallback —
+  open source; handles scanned + Sinhala/Tamil judgements.
+- **Embeddings / rerank:** `BAAI/bge-m3` + `BAAI/bge-reranker-v2-m3`
+  (multilingual, local, open source).
+- **Storage (zero-config, local files — no server):** SQLite for structured
+  metadata, ChromaDB for vectors.
+- **Analysis:** Claude (`claude-opus-4-8`).
+- **UI:** Streamlit.
+
+## Pipeline (phases)
+1. **Scrape** (`src/scrape.py`) — crawl the two SC sources, merge by filename,
+   download PDFs + write `data/manifest.json` (metadata + audit trail). **DONE.**
+2. **Ingest** (`src/ingest.py`) — PyMuPDF text, Tesseract OCR fallback →
+   page-anchored `Chunk`s.
+3. **Store** (`src/store.py`) — SQLite metadata + ChromaDB embeddings.
+4. **Retrieve** (`src/retrieve.py`) — Chroma recall → BGE rerank; judgments
+   first, then notes.
+5. **Analyze** (`src/analyze.py`) — Claude + `prompts/system_prompt.md` →
+   validated `CaseAnalysis`.
+
+## Data sources (verified)
+- Archive table `https://supremecourt.lk/judgements/` — ~2,580 rows, fully
+  server-rendered, rich metadata (date, case no, parties, judge, keywords,
+  legislation, pdf url). One GET retrieves all rows.
+- Directory index `https://supremecourt.lk/wp-content/uploads/judgements/` —
+  ~3,790 PDFs; the completeness spine for older files.
+- Merged total: ~3,859 judgements.
+
+## Output schema (the breakdown)
+`src/schema.py :: CaseAnalysis`: `topics_discussed`, `factual_matrix` (facts),
+`legal_issues`, `evidence_weighing` (evidence), `precedent_index` (case law
+cited; Applied / Distinguished / Overruled / Followed), `legislation_cited`,
+`deciding_factors`, `ratio_decidendi`, `final_order` (final judgement),
+`academic_synthesis` (analysis vs personal repository).
+
+## Operational Guidelines (when analysing judgements)
+- **Source fidelity:** never guess. Missing detail → output exactly
+  `Information not available in source text.`
+- **Citation enforcement:** every claim cites `[Case No | Page:Para]`.
+- **Precedent test** ("Can we use Case X?"): (1) retrieve facts + ratio of X,
+  (2) map to the user's scenario, (3) validate against personal notes (laches,
+  statutory conflicts, unexplained laches).
+- **Languages:** English, Sinhala, Tamil; preserve original legal terms.
+- **Conflicts:** flag where the court diverges from the personal repository.
+- **Human-in-the-loop:** structure and flag; a lawyer verifies every citation.
+  Always show the source PDF next to any AI summary. RAG reduces — it does not
+  eliminate — error.
+
+## Personal repository
+Notes as subject Markdown files in `data/personal_repo/` (e.g.
+`trust_law_principles.md`), tagged `{ "Category": "Theory", "Subject": "Laches" }`
+for selective retrieval. Stored in the same Chroma collection; the `source` field
+separates them from judgments.
+
+## Status
+Phase 1 (scraper) done & tested — 3,859 judgements discovered, `data/manifest.json`
++ sample PDFs downloaded. Next: Phase 2 ingestion (validate PyMuPDF text + OCR on
+a few real PDFs before building downstream).
+
+## Conventions
+Python 3.11+, Pydantic v2, type hints. Use the project `.venv`. Secrets in `.env`
+(see `.env.example`); never commit `data/` contents or keys.
