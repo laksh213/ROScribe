@@ -60,7 +60,8 @@
       "Bash(curl -s --max-time 120 http://localhost:11434/api/generate -d '{\"model\":\"llama3.2:3b\",\"prompt\":\"Say the word ready.\",\"stream\":false}')",
       "Bash(.venv/bin/python -c \"import llama_cpp; print\\('✓ llama-cpp-python', llama_cpp.__version__\\)\")",
       "Bash(grep -vE \"^\\(llama_|ggml_|load_|print_info|llama|ggml|metal|build:|system_info|main:|Model metadata|llama_model_loader|llama_kv|llama_context|llama_perf|sampler|^\\\\s*$\\)\" /tmp/llama_stderr.log)",
-      "Bash(grep -vE \"^\\(llama_|ggml_|load_|print_info|llama |ggml |metal|build:|system_info|main:|Model metadata|llama_model_loader|llama_kv|llama_context|llama_perf|sampler|common_|init:|graph_|^\\\\s*$\\)\" /tmp/llama_stderr.log)"
+      "Bash(grep -vE \"^\\(llama_|ggml_|load_|print_info|llama |ggml |metal|build:|system_info|main:|Model metadata|llama_model_loader|llama_kv|llama_context|llama_perf|sampler|common_|init:|graph_|^\\\\s*$\\)\" /tmp/llama_stderr.log)",
+      "Bash(pkill -f \"\\\\.venv/bin/python\")"
     ]
   }
 }
