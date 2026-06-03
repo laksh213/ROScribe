@@ -62,6 +62,19 @@ def _chat(system_text: str, user_text: str, max_tokens: int = 4096, json_mode: b
         )
         return resp.content[0].text
 
+    if provider == "llamacpp":
+        llm = _get_llama()
+        kwargs: dict = {
+            "messages": [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ],
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        return llm.create_chat_completion(**kwargs)["choices"][0]["message"]["content"]
+
     # OpenAI-compatible: Ollama (local) or OpenAI
     from openai import OpenAI
 
