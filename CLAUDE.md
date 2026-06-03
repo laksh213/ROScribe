@@ -81,7 +81,8 @@ Phases 1–4 implemented and verified on real data; Phase 5 wired (needs API key
 - **Ingest** (`src/ingest.py`): PyMuPDF text + Tesseract OCR fallback; page/para anchors.
 - **Index** (`src/index.py` + `src/store.py`): 15 judgements → ~560 chunks in SQLite + Chroma.
 - **Retrieve** (`src/retrieve.py`): semantic search verified; BGE rerank optional.
-- **Analyze** (`src/analyze.py`): Claude breakdown + `precedent_test`; set `ANTHROPIC_API_KEY` to enable.
+- **Analyze** (`src/analyze.py`): structured breakdown + `precedent_test` via a pluggable LLM (Ollama local by default); start Ollama or set `LLM_PROVIDER`.
+- **Notes** (`src/ingest.py::load_personal_repo`): law notes indexed by Subject/Category. Verified: 562 judgement + 2,163 note chunks coexisting, filterable by `source`.
 - **UI** (`app/streamlit_app.py`): search + breakdown tabs.
 
 Embedding note: until `pip install -r requirements.txt` pulls sentence-transformers,
