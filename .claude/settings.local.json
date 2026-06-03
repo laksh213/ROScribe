@@ -41,7 +41,8 @@
       "Bash(cd /Users/laksh/Desktop/ROScribe *)",
       "Bash(curl -s --retry 40 --retry-connrefused --retry-delay 1 http://localhost:8501/_stcore/health)",
       "Bash(pkill -f \"streamlit run\")",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(.venv/bin/streamlit run *)"
     ]
   }
 }
