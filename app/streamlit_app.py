@@ -13,7 +13,11 @@ Everything runs locally; the LLM is whatever LLM_PROVIDER points at.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
+
+# Make the project root importable when launched as `streamlit run app/streamlit_app.py`
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import streamlit as st
 
