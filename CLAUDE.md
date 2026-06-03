@@ -67,10 +67,13 @@ cited; Applied / Distinguished / Overruled / Followed), `legislation_cited`,
   eliminate — error.
 
 ## Personal repository
-Notes as subject Markdown files in `data/personal_repo/` (e.g.
-`trust_law_principles.md`), tagged `{ "Category": "Theory", "Subject": "Laches" }`
-for selective retrieval. Stored in the same Chroma collection; the `source` field
-separates them from judgments.
+The user's law-school notes live in a folder of `NN - Subject / Category / file`
+(PDF, docx, txt, md, html), e.g. `01 - Civil Procedure 1 / Notes / x.pdf`.
+`ingest.load_personal_repo` walks it, tagging each chunk with **subject** and
+**category** (derived from the folder layout) and `source="personal_repo"`, then
+stores it in the same Chroma collection alongside judgements. Index with:
+`python -m src.index --notes "<PERSONAL_REPO_DIR>"`. Anchors read
+`[Subject / Category / file | page:para]`.
 
 ## Status
 Phases 1–4 implemented and verified on real data; Phase 5 wired (needs API key).
