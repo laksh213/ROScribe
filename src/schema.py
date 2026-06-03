@@ -69,12 +69,14 @@ class Metadata(BaseModel):
 
 
 class LegalIssue(BaseModel):
-    question: str
+    model_config = ConfigDict(populate_by_name=True)
+    question: str = Field(validation_alias=AliasChoices("question", "issue", "legal_issue", "text"))
     citation: Citation | None = None
 
 
 class EvidenceItem(BaseModel):
-    description: str
+    model_config = ConfigDict(populate_by_name=True)
+    description: str = Field(validation_alias=AliasChoices("description", "evidence", "item", "text"))
     evidentiary_value: str = NOT_AVAILABLE
     citation: Citation | None = None
 
