@@ -41,9 +41,11 @@ def _rerank(query: str, hits: list[dict], k: int) -> list[dict]:
 
 
 def retrieve(query: str, k: int = 8, source: str | None = None) -> list[dict]:
-    """Chroma recall -> bge-reranker-v2 -> top-k."""
+    """Chroma recall -> (optional) bge-reranker-v2 -> top-k."""
     hits = similarity_search(query, k=max(k * 3, 20), source=source)
-    return _rerank(query, hits, k)
+    if settings.use_reranker:
+        return _rerank(query, hits, k)
+    return hits[:k]
 
 
 def main(argv: list[str] | None = None) -> None:
