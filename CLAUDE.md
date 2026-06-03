@@ -20,8 +20,12 @@ analysing judgements, follow the Operational Guidelines strictly.
   (multilingual, local, open source).
 - **Storage (zero-config, local files — no server):** SQLite for structured
   metadata, ChromaDB for vectors.
-- **Analysis:** Claude (`claude-opus-4-8`).
+- **Analysis:** pluggable LLM via `LLM_PROVIDER` — **Ollama (local, default)** for a
+  fully on-device/private pipeline, or Anthropic / OpenAI. Isolated in `src/analyze.py`.
 - **UI:** Streamlit.
+
+Local-first: with Ollama + local embeddings, judgements AND personal notes never
+leave the machine — the right default for confidential legal data.
 
 ## Pipeline (phases)
 1. **Scrape** (`src/scrape.py`) — crawl the two SC sources, merge by filename,
