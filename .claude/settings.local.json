@@ -58,7 +58,8 @@
       "Bash(curl -s --max-time 90 http://localhost:11434/api/generate -d '{\"model\":\"llama3.2:3b\",\"prompt\":\"Reply with exactly: ready\",\"stream\":false}')",
       "Bash(.venv/bin/python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('✓ OK →', repr\\(d.get\\('response',''\\)\\)[:60], '| gen', d.get\\('eval_count'\\),'tok in', round\\(d.get\\('eval_duration',0\\)/1e9,1\\),'s'\\)\")",
       "Bash(curl -s --max-time 120 http://localhost:11434/api/generate -d '{\"model\":\"llama3.2:3b\",\"prompt\":\"Say the word ready.\",\"stream\":false}')",
-      "Bash(.venv/bin/python -c \"import llama_cpp; print\\('✓ llama-cpp-python', llama_cpp.__version__\\)\")"
+      "Bash(.venv/bin/python -c \"import llama_cpp; print\\('✓ llama-cpp-python', llama_cpp.__version__\\)\")",
+      "Bash(grep -vE \"^\\(llama_|ggml_|load_|print_info|llama|ggml|metal|build:|system_info|main:|Model metadata|llama_model_loader|llama_kv|llama_context|llama_perf|sampler|^\\\\s*$\\)\" /tmp/llama_stderr.log)"
     ]
   }
 }
