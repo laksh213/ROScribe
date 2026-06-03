@@ -1,14 +1,16 @@
-# --- LLM brain (your choice: Claude) ---
-anthropic>=0.40
+# --- LLM (pluggable; Ollama local by default) ---
+openai>=1.40            # talks to Ollama / any OpenAI-compatible endpoint
+anthropic>=0.40         # optional: only when LLM_PROVIDER=anthropic
 
 # --- Scraper (Phase 1) — implemented & tested ---
 requests>=2.31
 beautifulsoup4>=4.12
 
-# --- PDF text + OCR (open source) ---
-PyMuPDF>=1.24            # fast text/layout extraction (import name: fitz)
+# --- PDF + notes text + OCR (open source) ---
+PyMuPDF>=1.24           # judgement + PDF-note text (import name: fitz)
+python-docx>=1.1        # .docx notes
 pytesseract>=0.3.13     # OCR wrapper — needs system Tesseract (see README)
-Pillow>=10.0            # image handling for OCR
+Pillow>=10.0
 
 # --- Embeddings + reranking (open source, multilingual: EN / Sinhala / Tamil) ---
 sentence-transformers>=3.0   # BAAI/bge-m3 (pulls torch; fastembed is a lighter swap)
@@ -18,11 +20,9 @@ FlagEmbedding>=1.3           # BAAI/bge-reranker-v2-m3
 chromadb>=0.5           # embedded vector DB
 # SQLite ships with Python (stdlib) — structured metadata, no install needed
 
-# --- Schema / config ---
+# --- Schema / config / UI ---
 pydantic>=2.9
 python-dotenv>=1.0
-
-# --- UI ---
 streamlit>=1.39
 
 # --- Dev ---
