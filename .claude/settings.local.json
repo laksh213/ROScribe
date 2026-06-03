@@ -25,7 +25,9 @@
       "Bash(grep -v -E \"Insert of existing|Add of existing|^$\")",
       "Bash(.venv/bin/python -m src.retrieve \"compensation in lieu of reinstatement and the discretion of the labour tribunal\" -k 3)",
       "Bash(.venv/bin/python -m src.retrieve \"fundamental rights petition against arbitrary executive or state action\" -k 3)",
-      "Bash(.venv/bin/python -m src.analyze data/sc_judgements/sc_appeal_175_2017.pdf)"
+      "Bash(.venv/bin/python -m src.analyze data/sc_judgements/sc_appeal_175_2017.pdf)",
+      "Bash(.venv/bin/python -m py_compile app/streamlit_app.py src/*.py)",
+      "Bash(.venv/bin/python -c \"import sqlite3; c=sqlite3.connect\\('data/roscribe.db'\\); n=c.execute\\('select count\\(*\\),sum\\(n_chunks\\) from judgements'\\).fetchone\\(\\); print\\(f'{n[0]} cases, {n[1]} chunks'\\)\")"
     ]
   }
 }
