@@ -1,9 +1,12 @@
 """Phase 2 — Text extraction & chunking (open source).
 
-PyMuPDF (fitz) extracts the text layer fast. If a page has too little text (a
-scanned image), fall back to Tesseract OCR with `eng+sin+tam` so Sinhala and
-Tamil judgements work. Chunks keep page + paragraph anchors so citations
-`[Case No | Page:Para]` stay verifiable.
+Judgements: PyMuPDF (fitz) extracts the text layer fast; if a page has too little
+text (scanned), fall back to Tesseract OCR (`eng+sin+tam`). Chunks keep page +
+paragraph anchors so citations `[Case No | Page:Para]` stay verifiable.
+
+Personal repository: `load_personal_repo` walks your notes folder (PDF / docx /
+txt / md / html), tagging each chunk with Subject and Category derived from the
+`NN - Subject / Category / file` folder layout.
 
 CLI:
   python -m src.ingest data/sc_judgements/<file>.pdf --out data/extracted/<file>.md
@@ -22,6 +25,8 @@ import fitz  # PyMuPDF
 
 Source = Literal["judgment", "personal_repo"]
 
+NOTE_EXTS = {".pdf", ".docx", ".txt", ".md", ".html", ".htm"}
+
 
 @dataclass
 class Chunk:
@@ -30,14 +35,18 @@ class Chunk:
     page: int
     para: str | None = None
     source: Source = "judgment"
-    metadata: dict = field(default_factory=dict)  # e.g. {"Category", "Subject"}
+    metadata: dict = field(default_factory=dict)  # e.g. {"subject", "category"}
 
     def anchor(self) -> str:
+        if self.para is None:
+            return f"[{self.case_no} | p{self.page}]"
         return f"[{self.case_no} | {self.page}:{self.para}]"
 
 
+# --------------------------------------------------------------------------- #
+# Extraction                                                                  #
+# --------------------------------------------------------------------------- #
 def _ocr_page(page: "fitz.Page", langs: str) -> str:
-    """OCR a page image with Tesseract. Returns "" if OCR deps are missing."""
     try:
         import pytesseract
         from PIL import Image
@@ -48,7 +57,7 @@ def _ocr_page(page: "fitz.Page", langs: str) -> str:
 
 
 def extract_pages(pdf_path: str, ocr_langs: str = "eng+sin+tam", ocr_threshold: int = 200) -> list[str]:
-    """Per-page text via PyMuPDF; OCR pages whose text layer is below threshold."""
+    """Per-page text via PyMuPDF; OCR pages below `ocr_threshold` chars (0 = never)."""
     pages: list[str] = []
     with fitz.open(pdf_path) as doc:
         for page in doc:
@@ -59,8 +68,36 @@ def extract_pages(pdf_path: str, ocr_langs: str = "eng+sin+tam", ocr_threshold: 
     return pages
 
 
+def _read_docx(path: str) -> str:
+    from docx import Document
+
+    return "\n".join(p.text for p in Document(path).paragraphs if p.text.strip())
+
+
+def _read_html(path: str) -> str:
+    from bs4 import BeautifulSoup
+
+    return BeautifulSoup(Path(path).read_text(errors="ignore"), "html.parser").get_text(" ", strip=True)
+
+
+def extract_document(path: str) -> list[str]:
+    """Return text 'pages' for any supported note format (no OCR — speed)."""
+    ext = Path(path).suffix.lower()
+    if ext == ".pdf":
+        return extract_pages(path, ocr_threshold=0)
+    if ext == ".docx":
+        return [_read_docx(path)]
+    if ext in {".txt", ".md"}:
+        return [Path(path).read_text(errors="ignore")]
+    if ext in {".html", ".htm"}:
+        return [_read_html(path)]
+    return []
+
+
+# --------------------------------------------------------------------------- #
+# Chunking                                                                     #
+# --------------------------------------------------------------------------- #
 def _split_paragraphs(text: str, max_chars: int = 1200) -> list[str]:
-    """Split on blank lines, hard-split oversized blocks, then re-pack to ~max_chars."""
     pieces: list[str] = []
     for block in re.split(r"\n\s*\n", text):
         block = block.strip()
@@ -87,7 +124,6 @@ def _split_paragraphs(text: str, max_chars: int = 1200) -> list[str]:
 
 
 def chunk_pages(pages: list[str], case_no: str, source: Source = "judgment") -> list[Chunk]:
-    """Split per-page text into page/paragraph-anchored chunks."""
     chunks: list[Chunk] = []
     for pno, text in enumerate(pages, start=1):
         for i, para in enumerate(_split_paragraphs(text), start=1):
@@ -96,13 +132,42 @@ def chunk_pages(pages: list[str], case_no: str, source: Source = "judgment") -> 
 
 
 def case_no_from_filename(name: str) -> str:
-    """Best-effort case number from a PDF filename (manifest metadata is preferred)."""
     return Path(name).stem.replace("_", " ").upper()
 
 
-def load_personal_repo(directory: str) -> list[Chunk]:
-    """Load tagged Markdown notes from data/personal_repo/ into chunks."""
-    raise NotImplementedError("Phase 2: parse Markdown notes + metadata tags.")
+# --------------------------------------------------------------------------- #
+# Personal repository                                                          #
+# --------------------------------------------------------------------------- #
+def _clean_subject(name: str) -> str:
+    return re.sub(r"^\d+\s*-\s*", "", name).strip()
+
+
+def load_personal_repo(directory: str, limit: int | None = None) -> list[Chunk]:
+    """Walk the notes folder; tag chunks with Subject / Category from the layout."""
+    root = Path(directory)
+    files = [
+        p for p in sorted(root.rglob("*"))
+        if p.is_file() and p.suffix.lower() in NOTE_EXTS
+        and not p.name.startswith("~$") and not p.name.startswith(".")
+    ]
+    if limit:
+        files = files[:limit]
+
+    chunks: list[Chunk] = []
+    for p in files:
+        parts = p.relative_to(root).parts
+        subject = _clean_subject(parts[0]) if parts else "General"
+        category = parts[1] if len(parts) > 2 else "General"
+        label = f"{subject} / {category} / {p.name}"
+        try:
+            pages = extract_document(str(p))
+        except Exception:
+            continue  # unreadable file — skip rather than fail the batch
+        meta = {"subject": subject, "category": category, "filename": p.name}
+        for c in chunk_pages(pages, case_no=label, source="personal_repo"):
+            c.metadata.update(meta)
+            chunks.append(c)
+    return chunks
 
 
 def main(argv: list[str] | None = None) -> None:
