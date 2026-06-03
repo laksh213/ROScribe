@@ -20,7 +20,9 @@
       "Bash(.venv/bin/python -m src.ingest data/sc_judgements/sc_fr_272_2024.pdf --show 1)",
       "Bash(echo \"EXIT=$?\")",
       "Bash(.venv/bin/python -c \"import chromadb, anthropic; print\\('chromadb', chromadb.__version__, '| anthropic', anthropic.__version__\\)\")",
-      "Bash(.venv/bin/python -m src.scrape --limit 15)"
+      "Bash(.venv/bin/python -m src.scrape --limit 15)",
+      "Bash(.venv/bin/python -m src.index)",
+      "Bash(grep -v -E \"Insert of existing|Add of existing|^$\")"
     ]
   }
 }
