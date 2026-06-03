@@ -90,6 +90,7 @@ def add_chunks(chunks: list[Chunk], extra_meta: dict | None = None) -> None:
             "case_no": c.case_no, "page": c.page, "para": c.para or "",
             "source": c.source, "anchor": c.anchor(),
         }
+        m.update({k: v for k, v in c.metadata.items() if isinstance(v, (str, int, float, bool))})
         if extra_meta:
             m.update({k: v for k, v in extra_meta.items() if isinstance(v, (str, int, float))})
         metas.append(m)
