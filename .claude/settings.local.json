@@ -37,7 +37,8 @@
       "Bash(.venv/bin/python -m src.retrieve \"service of summons on the defendant\" -k 2 --source personal_repo)",
       "Bash(.venv/bin/python -c ' *)",
       "Bash(.venv/bin/python -m py_compile app/streamlit_app.py)",
-      "Bash(.venv/bin/python -c \"from src import store; from src.retrieve import retrieve; from src.analyze import analyze_pdf, precedent_test; print\\('✓ app imports resolve'\\)\")"
+      "Bash(.venv/bin/python -c \"from src import store; from src.retrieve import retrieve; from src.analyze import analyze_pdf, precedent_test; print\\('✓ app imports resolve'\\)\")",
+      "Bash(cd /Users/laksh/Desktop/ROScribe *)"
     ]
   }
 }
