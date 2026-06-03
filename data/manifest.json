@@ -12,9 +12,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_appeal_175_2017.pdf",
-    "scraped_at": "2026-06-03T09:12:43.806100+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_fr_272_2024.pdf",
@@ -29,9 +29,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_fr_272_2024.pdf",
-    "scraped_at": "2026-06-03T09:12:44.852733+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_appeal_85_2025.pdf",
@@ -4338,8 +4338,8 @@
     "scraped_at": ""
   },
   {
-    "filename": "sc_appeal_169_2025.pdf",
-    "pdf_url": "https://supremecourt.lk/wp-content/uploads/judgements/sc_appeal_169_2025.pdf",
+    "filename": "sc_appeal_169_2025_ed1.pdf",
+    "pdf_url": "https://supremecourt.lk/wp-content/uploads/judgements/sc_appeal_169_2025_ed1.pdf",
     "case_no": "SC/APPEAL/169/2025",
     "date": "2026-04-29",
     "date_text": "29 Apr 2026",
@@ -83509,6 +83509,21 @@
   {
     "filename": "sc_appeal_16_2020.pdf",
     "pdf_url": "https://supremecourt.lk/wp-content/uploads/judgements/sc_appeal_16_2020.pdf",
+    "case_no": "",
+    "date": "",
+    "date_text": "",
+    "parties": "",
+    "judges": [],
+    "keywords": [],
+    "legislation": [],
+    "source": "index",
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
+  },
+  {
+    "filename": "sc_appeal_169_2025.pdf",
+    "pdf_url": "https://supremecourt.lk/wp-content/uploads/judgements/sc_appeal_169_2025.pdf",
     "case_no": "",
     "date": "",
     "date_text": "",
