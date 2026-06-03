@@ -131,3 +131,28 @@ class CaseAnalysis(BaseModel):
         if isinstance(v, str):
             return [v] if v.strip() else []
         return v
+
+    @field_validator("legal_issues", mode="before")
+    @classmethod
+    def _wrap_issues(cls, v):
+        if isinstance(v, str):
+            v = [v] if v.strip() else []
+        if isinstance(v, list):
+            return [{"question": x} if isinstance(x, str) else x for x in v]
+        return v
+
+    @field_validator("evidence_weighing", mode="before")
+    @classmethod
+    def _wrap_evidence(cls, v):
+        if isinstance(v, str):
+            v = [v] if v.strip() else []
+        if isinstance(v, list):
+            return [{"description": x} if isinstance(x, str) else x for x in v]
+        return v
+
+    @field_validator("precedent_index", mode="before")
+    @classmethod
+    def _wrap_precedents(cls, v):
+        if isinstance(v, list):
+            return [{"cited_case": x} if isinstance(x, str) else x for x in v]
+        return v
