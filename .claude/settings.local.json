@@ -56,7 +56,8 @@
       "Bash(.venv/bin/python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('response:', repr\\(d.get\\('response',''\\)\\)[:120]\\); print\\('load_ns:', d.get\\('load_duration',0\\)//10**9, 's, eval:', d.get\\('eval_count'\\),'tok'\\)\")",
       "Bash(curl -s --retry 30 --retry-connrefused --retry-delay 1 http://localhost:11434/api/tags)",
       "Bash(curl -s --max-time 90 http://localhost:11434/api/generate -d '{\"model\":\"llama3.2:3b\",\"prompt\":\"Reply with exactly: ready\",\"stream\":false}')",
-      "Bash(.venv/bin/python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('✓ OK →', repr\\(d.get\\('response',''\\)\\)[:60], '| gen', d.get\\('eval_count'\\),'tok in', round\\(d.get\\('eval_duration',0\\)/1e9,1\\),'s'\\)\")"
+      "Bash(.venv/bin/python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('✓ OK →', repr\\(d.get\\('response',''\\)\\)[:60], '| gen', d.get\\('eval_count'\\),'tok in', round\\(d.get\\('eval_duration',0\\)/1e9,1\\),'s'\\)\")",
+      "Bash(curl -s --max-time 120 http://localhost:11434/api/generate -d '{\"model\":\"llama3.2:3b\",\"prompt\":\"Say the word ready.\",\"stream\":false}')"
     ]
   }
 }
