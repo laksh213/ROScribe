@@ -47,12 +47,14 @@ def retrieve(query: str, k: int = 8, source: str | None = None) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="Semantic search over indexed judgements.")
+    ap = argparse.ArgumentParser(description="Semantic search over the index.")
     ap.add_argument("query")
     ap.add_argument("-k", type=int, default=5)
+    ap.add_argument("--source", choices=["judgment", "personal_repo"], default=None,
+                    help="restrict to judgements or your notes")
     args = ap.parse_args(argv)
 
-    hits = retrieve(args.query, args.k)
+    hits = retrieve(args.query, args.k, source=args.source)
     if not hits:
         print("No results — is the index built? Run: python -m src.index")
         return
