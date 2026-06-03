@@ -21,6 +21,8 @@ class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     ollama_num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "8192"))  # must hold a full judgment
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    # llamacpp: run a GGUF directly (e.g. an Ollama-downloaded blob) without a server
+    llamacpp_model_path: str = os.getenv("LLAMACPP_MODEL_PATH", "")
     # Anthropic (optional — set LLM_PROVIDER=anthropic to use)
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
