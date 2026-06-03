@@ -22,7 +22,10 @@
       "Bash(.venv/bin/python -c \"import chromadb, anthropic; print\\('chromadb', chromadb.__version__, '| anthropic', anthropic.__version__\\)\")",
       "Bash(.venv/bin/python -m src.scrape --limit 15)",
       "Bash(.venv/bin/python -m src.index)",
-      "Bash(grep -v -E \"Insert of existing|Add of existing|^$\")"
+      "Bash(grep -v -E \"Insert of existing|Add of existing|^$\")",
+      "Bash(.venv/bin/python -m src.retrieve \"compensation in lieu of reinstatement and the discretion of the labour tribunal\" -k 3)",
+      "Bash(.venv/bin/python -m src.retrieve \"fundamental rights petition against arbitrary executive or state action\" -k 3)",
+      "Bash(.venv/bin/python -m src.analyze data/sc_judgements/sc_appeal_175_2017.pdf)"
     ]
   }
 }
