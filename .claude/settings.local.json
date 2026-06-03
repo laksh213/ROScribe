@@ -19,7 +19,8 @@
       "Bash(.venv/bin/python -m src.ingest data/sc_judgements/sc_appeal_175_2017.pdf --out data/extracted/sc_appeal_175_2017.md --show 2)",
       "Bash(.venv/bin/python -m src.ingest data/sc_judgements/sc_fr_272_2024.pdf --show 1)",
       "Bash(echo \"EXIT=$?\")",
-      "Bash(.venv/bin/python -c \"import chromadb, anthropic; print\\('chromadb', chromadb.__version__, '| anthropic', anthropic.__version__\\)\")"
+      "Bash(.venv/bin/python -c \"import chromadb, anthropic; print\\('chromadb', chromadb.__version__, '| anthropic', anthropic.__version__\\)\")",
+      "Bash(.venv/bin/python -m src.scrape --limit 15)"
     ]
   }
 }
