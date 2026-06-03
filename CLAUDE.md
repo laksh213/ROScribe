@@ -69,9 +69,18 @@ for selective retrieval. Stored in the same Chroma collection; the `source` fiel
 separates them from judgments.
 
 ## Status
-Phase 1 (scraper) done & tested — 3,859 judgements discovered, `data/manifest.json`
-+ sample PDFs downloaded. Next: Phase 2 ingestion (validate PyMuPDF text + OCR on
-a few real PDFs before building downstream).
+Phases 1–4 implemented and verified on real data; Phase 5 wired (needs API key).
+- **Scrape** (`src/scrape.py`): 3,859 judgements discovered; 15 downloaded as the demo corpus.
+- **Ingest** (`src/ingest.py`): PyMuPDF text + Tesseract OCR fallback; page/para anchors.
+- **Index** (`src/index.py` + `src/store.py`): 15 judgements → ~560 chunks in SQLite + Chroma.
+- **Retrieve** (`src/retrieve.py`): semantic search verified; BGE rerank optional.
+- **Analyze** (`src/analyze.py`): Claude breakdown + `precedent_test`; set `ANTHROPIC_API_KEY` to enable.
+- **UI** (`app/streamlit_app.py`): search + breakdown tabs.
+
+Embedding note: until `pip install -r requirements.txt` pulls sentence-transformers,
+the index uses Chroma's default (English) embedder. Re-run `python -m src.index`
+afterwards to switch to multilingual `bge-m3` (the collection name encodes the
+embedder, so the two never clash).
 
 ## Conventions
 Python 3.11+, Pydantic v2, type hints. Use the project `.venv`. Secrets in `.env`
