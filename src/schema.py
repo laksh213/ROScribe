@@ -66,8 +66,16 @@ class EvidenceItem(BaseModel):
 
 
 class PrecedentReference(BaseModel):
-    cited_case: str
-    treatment: PrecedentTreatment = PrecedentTreatment.NOT_AVAILABLE
+    # Tolerate the field-name variants small models emit.
+    model_config = ConfigDict(populate_by_name=True)
+
+    cited_case: str = Field(
+        validation_alias=AliasChoices("cited_case", "case_name", "case", "name", "title")
+    )
+    treatment: PrecedentTreatment = Field(
+        default=PrecedentTreatment.NOT_AVAILABLE,
+        validation_alias=AliasChoices("treatment", "precedence", "precedent_treatment", "status"),
+    )
     note: str = ""
     citation: Citation | None = None
 
