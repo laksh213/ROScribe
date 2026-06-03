@@ -30,6 +30,8 @@ class Settings:
     # --- Embeddings / rerank (open source, local, multilingual) ---
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     reranker_model: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+    # reranker is a ~2.3GB download; opt in explicitly
+    use_reranker: bool = os.getenv("USE_RERANKER", "false").lower() in ("1", "true", "yes")
 
     # --- Local storage ---
     sqlite_path: str = os.getenv("SQLITE_PATH", str(REPO_ROOT / "data" / "roscribe.db"))
