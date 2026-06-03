@@ -27,7 +27,7 @@ from .schema import CaseAnalysis
 PROMPT_PATH = REPO_ROOT / "prompts" / "system_prompt.md"
 
 
-def _chat(system_text: str, user_text: str, max_tokens: int = 4096) -> str:
+def _chat(system_text: str, user_text: str, max_tokens: int = 4096, json_mode: bool = False) -> str:
     """Dispatch one chat completion to the configured provider; return raw text."""
     provider = settings.llm_provider.lower()
 
@@ -49,25 +49,30 @@ def _chat(system_text: str, user_text: str, max_tokens: int = 4096) -> str:
     from openai import OpenAI
 
     if provider == "ollama":
-        client = OpenAI(base_url=settings.ollama_base_url, api_key="ollama")
+        client = OpenAI(base_url=settings.ollama_base_url, api_key="ollama", timeout=600.0)
         model = settings.llm_model
     elif provider == "openai":
         if not settings.openai_api_key:
             raise RuntimeError("LLM_PROVIDER=openai but OPENAI_API_KEY is not set.")
-        client = OpenAI(api_key=settings.openai_api_key)
+        client = OpenAI(api_key=settings.openai_api_key, timeout=600.0)
         model = settings.llm_model
     else:
         raise RuntimeError(f"Unknown LLM_PROVIDER: {settings.llm_provider!r}")
 
+    kwargs: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text},
+        ],
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    if provider == "ollama":
+        kwargs["extra_body"] = {"options": {"num_ctx": settings.ollama_num_ctx}}
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": user_text},
-            ],
-        )
+        resp = client.chat.completions.create(**kwargs)
     except Exception as e:
         if provider == "ollama":
             raise RuntimeError(
@@ -94,7 +99,7 @@ def analyze_text(case_no: str, full_text: str) -> CaseAnalysis:
         "[Case No | Page:Para] using the page markers. Return ONLY the JSON.\n\n"
         f"=== JUDGMENT TEXT ===\n{full_text}"
     )
-    raw = _chat(PROMPT_PATH.read_text(), user, max_tokens=4096)
+    raw = _chat(PROMPT_PATH.read_text(), user, max_tokens=4096, json_mode=True)
     return CaseAnalysis.model_validate(_extract_json(raw))
 
 

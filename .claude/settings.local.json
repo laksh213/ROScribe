@@ -45,7 +45,15 @@
       "Bash(.venv/bin/streamlit run *)",
       "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:8501/)",
       "Bash(.venv/bin/python -c \"import ast; ast.parse\\(open\\('app/streamlit_app.py'\\).read\\(\\)\\); print\\('app/streamlit_app.py: valid,', sum\\(1 for _ in open\\('app/streamlit_app.py'\\)\\), 'lines'\\)\")",
-      "Bash(.venv/bin/python -m py_compile src/index.py)"
+      "Bash(.venv/bin/python -m py_compile src/index.py)",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(.venv/bin/python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(' -', m['name'], f\\\\\"\\({m['size']//10**9}GB\\)\\\\\"\\) for m in d.get\\('models',[]\\)]\")",
+      "Bash(.venv/bin/python -m py_compile src/analyze.py src/config.py)",
+      "Bash(curl -s http://localhost:11434/api/ps)",
+      "Bash(.venv/bin/python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\([m['name'] for m in d.get\\('models',[]\\)]\\)\")",
+      "Bash(pkill -f \"from src.analyze import _chat\")",
+      "Bash(time curl -s --max-time 200 http://localhost:11434/api/generate -d '{\"model\":\"qwen2.5:14b\",\"prompt\":\"Reply with exactly: ready\",\"stream\":false,\"options\":{\"num_ctx\":2048}}')",
+      "Bash(.venv/bin/python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('response:', repr\\(d.get\\('response',''\\)\\)[:120]\\); print\\('load_ns:', d.get\\('load_duration',0\\)//10**9, 's, eval:', d.get\\('eval_count'\\),'tok'\\)\")"
     ]
   }
 }

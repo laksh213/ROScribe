@@ -19,6 +19,7 @@ class Settings:
     llm_provider: str = os.getenv("LLM_PROVIDER", "ollama")
     llm_model: str = os.getenv("LLM_MODEL", "llama3.1")  # Ollama/OpenAI model tag
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    ollama_num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "8192"))  # must hold a full judgment
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     # Anthropic (optional — set LLM_PROVIDER=anthropic to use)
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")

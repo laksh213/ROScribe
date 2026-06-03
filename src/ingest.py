@@ -52,8 +52,11 @@ def _ocr_page(page: "fitz.Page", langs: str) -> str:
         from PIL import Image
     except ImportError:
         return ""
-    pix = page.get_pixmap(dpi=300)
-    return pytesseract.image_to_string(Image.open(io.BytesIO(pix.tobytes("png"))), lang=langs)
+    try:
+        pix = page.get_pixmap(dpi=300)
+        return pytesseract.image_to_string(Image.open(io.BytesIO(pix.tobytes("png"))), lang=langs)
+    except Exception:
+        return ""  # tesseract binary missing or OCR failed — keep the text layer
 
 
 def extract_pages(pdf_path: str, ocr_langs: str = "eng+sin+tam", ocr_threshold: int = 200) -> list[str]:
