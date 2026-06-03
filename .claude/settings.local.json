@@ -31,7 +31,9 @@
       "Bash(.venv/bin/python -c \"import openai, docx; print\\('openai', openai.__version__, '| python-docx OK'\\)\")",
       "Bash(sysctl -n hw.memsize)",
       "Bash(echo \"scale=1; $\\(sysctl -n hw.memsize\\)/1073741824\")",
-      "Bash(echo \"RAM: $\\(echo \"scale=1; $\\(sysctl -n hw.memsize\\)/1073741824\")"
+      "Bash(echo \"RAM: $\\(echo \"scale=1; $\\(sysctl -n hw.memsize\\)/1073741824\")",
+      "Bash(.venv/bin/python -m py_compile src/*.py app/*.py)",
+      "Bash(.venv/bin/python -m src.index --notes \"/Users/laksh/Desktop/Final Year April 2026\" --limit 15)"
     ]
   }
 }
