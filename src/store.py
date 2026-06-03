@@ -27,6 +27,11 @@ from .ingest import Chunk
 
 
 def _embedding_function():
+    # ROSCRIBE_EMBEDDER=default forces the light MiniLM embedder / collection,
+    # even when sentence-transformers is installed (used while the bge-m3
+    # re-index is incomplete).
+    if os.getenv("ROSCRIBE_EMBEDDER", "").lower() == "default":
+        return None, "default"
     try:
         import sentence_transformers  # noqa: F401
         from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
