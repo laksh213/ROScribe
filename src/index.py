@@ -60,16 +60,21 @@ def build_judgements(limit: int | None = None) -> None:
 
 def build_notes(directory: str, limit: int | None = None) -> None:
     store.init_db()
-    print(f"Loading personal repository: {directory}")
+    print(f"Loading personal repository: {directory}", flush=True)
+    print("  reading + chunking files (can take a few minutes for a large repo)…", flush=True)
     chunks = load_personal_repo(directory, limit=limit)
     subjects: dict[str, int] = {}
     for c in chunks:
-        subjects[c.metadata.get("subject", "?")] = subjects.get(c.metadata.get("subject", "?"), 0) + 1
+        s = c.metadata.get("subject", "?")
+        subjects[s] = subjects.get(s, 0) + 1
+    print(f"  {len(chunks)} chunks from {len(subjects)} subjects; embedding into {store.COLLECTION}…", flush=True)
 
     BATCH = 256
-    for i in range(0, len(chunks), BATCH):
+    total = len(chunks)
+    for i in range(0, total, BATCH):
         store.add_chunks(chunks[i : i + BATCH])
-    print(f"Indexed {len(chunks)} note chunks into {store.COLLECTION} (source=personal_repo)")
+        print(f"  embedded {min(i + BATCH, total)}/{total}", flush=True)
+    print(f"Indexed {total} note chunks into {store.COLLECTION} (source=personal_repo)")
     for s, n in sorted(subjects.items()):
         print(f"  {s:40} {n:>5} chunks")
 
