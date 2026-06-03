@@ -42,7 +42,9 @@
       "Bash(curl -s --retry 40 --retry-connrefused --retry-delay 1 http://localhost:8501/_stcore/health)",
       "Bash(pkill -f \"streamlit run\")",
       "mcp__Claude_Preview__preview_start",
-      "Bash(.venv/bin/streamlit run *)"
+      "Bash(.venv/bin/streamlit run *)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:8501/)",
+      "Bash(.venv/bin/python -c \"import ast; ast.parse\\(open\\('app/streamlit_app.py'\\).read\\(\\)\\); print\\('app/streamlit_app.py: valid,', sum\\(1 for _ in open\\('app/streamlit_app.py'\\)\\), 'lines'\\)\")"
     ]
   }
 }
