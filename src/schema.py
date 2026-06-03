@@ -53,6 +53,20 @@ class Metadata(BaseModel):
     jurisdiction_tags: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)  # seeded from the archive table
 
+    @field_validator("case_no", "date", "parties", "court_division", mode="before")
+    @classmethod
+    def _str_from_list(cls, v):
+        if isinstance(v, list):
+            return " ".join(str(x) for x in v if x) or NOT_AVAILABLE
+        return v
+
+    @field_validator("judges", "jurisdiction_tags", "keywords", mode="before")
+    @classmethod
+    def _list_from_str(cls, v):
+        if isinstance(v, str):
+            return [v] if v.strip() else []
+        return v
+
 
 class LegalIssue(BaseModel):
     question: str
