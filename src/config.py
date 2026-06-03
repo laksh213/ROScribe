@@ -15,13 +15,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass(frozen=True)
 class Settings:
+    # --- LLM provider: "ollama" (local, default), "anthropic", or "openai" ---
+    llm_provider: str = os.getenv("LLM_PROVIDER", "ollama")
+    llm_model: str = os.getenv("LLM_MODEL", "llama3.1")  # Ollama/OpenAI model tag
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    # Anthropic (optional — set LLM_PROVIDER=anthropic to use)
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
+
+    # --- Embeddings / rerank (open source, local, multilingual) ---
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     reranker_model: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+
+    # --- Local storage ---
     sqlite_path: str = os.getenv("SQLITE_PATH", str(REPO_ROOT / "data" / "roscribe.db"))
     chroma_dir: str = os.getenv("CHROMA_DIR", str(REPO_ROOT / "data" / "chroma"))
     tesseract_langs: str = os.getenv("TESSERACT_LANGS", "eng+sin+tam")
+
+    # --- Personal repository (your law-school notes) ---
+    personal_repo_dir: str = os.getenv("PERSONAL_REPO_DIR", "")
 
 
 settings = Settings()
