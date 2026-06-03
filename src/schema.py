@@ -96,3 +96,24 @@ class CaseAnalysis(BaseModel):
     academic_synthesis: str = NOT_AVAILABLE                 # analysis vs personal repository
     # Populated by the synthesis step when the court diverges from the notes.
     conflicts_flagged: list[str] = Field(default_factory=list)
+
+    # --- tolerance for LLM output variance (esp. small local models) ---
+    @field_validator(
+        "factual_matrix", "ratio_decidendi", "final_order", "academic_synthesis", mode="before"
+    )
+    @classmethod
+    def _coerce_str(cls, v):
+        if isinstance(v, list):
+            return " ".join(str(x) for x in v if x is not None)
+        if isinstance(v, dict):
+            return " ".join(f"{k}: {x}" for k, x in v.items())
+        return v
+
+    @field_validator(
+        "topics_discussed", "deciding_factors", "legislation_cited", "conflicts_flagged", mode="before"
+    )
+    @classmethod
+    def _coerce_list(cls, v):
+        if isinstance(v, str):
+            return [v] if v.strip() else []
+        return v
