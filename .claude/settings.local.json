@@ -39,7 +39,8 @@
       "Bash(.venv/bin/python -m py_compile app/streamlit_app.py)",
       "Bash(.venv/bin/python -c \"from src import store; from src.retrieve import retrieve; from src.analyze import analyze_pdf, precedent_test; print\\('✓ app imports resolve'\\)\")",
       "Bash(cd /Users/laksh/Desktop/ROScribe *)",
-      "Bash(curl -s --retry 40 --retry-connrefused --retry-delay 1 http://localhost:8501/_stcore/health)"
+      "Bash(curl -s --retry 40 --retry-connrefused --retry-delay 1 http://localhost:8501/_stcore/health)",
+      "Bash(pkill -f \"streamlit run\")"
     ]
   }
 }
