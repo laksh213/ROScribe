@@ -63,7 +63,12 @@
       "Bash(grep -vE \"^\\(llama_|ggml_|load_|print_info|llama |ggml |metal|build:|system_info|main:|Model metadata|llama_model_loader|llama_kv|llama_context|llama_perf|sampler|common_|init:|graph_|^\\\\s*$\\)\" /tmp/llama_stderr.log)",
       "Bash(pkill -f \"\\\\.venv/bin/python\")",
       "Bash(curl -s -o /dev/null -w \"page HTTP %{http_code}\\\\n\" http://localhost:8501/)",
-      "Bash(.venv/bin/python -c \"from src.config import settings; print\\('LLM:', settings.llm_provider, '| model:', settings.llamacpp_model_path.split\\('/'\\)[-1][:20]+'…'\\); print\\('embedder: default\\(MiniLM\\) | reranker:', settings.use_reranker\\)\")"
+      "Bash(.venv/bin/python -c \"from src.config import settings; print\\('LLM:', settings.llm_provider, '| model:', settings.llamacpp_model_path.split\\('/'\\)[-1][:20]+'…'\\); print\\('embedder: default\\(MiniLM\\) | reranker:', settings.use_reranker\\)\")",
+      "Bash(chmod +x scripts/build_all.sh)",
+      "Bash(pkill -f \"src.scrape\")",
+      "Bash(nohup bash scripts/build_all.sh)",
+      "Bash(disown)",
+      "Bash(echo \"launched build_all.sh \\(pid $!\\)\")"
     ]
   }
 }
