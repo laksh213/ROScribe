@@ -12,8 +12,8 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_appeal_175_2017.pdf",
+    "downloaded": false,
+    "local_path": "",
     "scraped_at": ""
   },
   {
@@ -29,8 +29,8 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_fr_272_2024.pdf",
+    "downloaded": false,
+    "local_path": "",
     "scraped_at": ""
   },
   {
@@ -46,9 +46,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_appeal_85_2025.pdf",
-    "scraped_at": "2026-06-03T09:52:23.913667+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_appeal_161_2023.pdf",
@@ -63,9 +63,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_appeal_161_2023.pdf",
-    "scraped_at": "2026-06-03T09:52:25.010071+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_fr_32_33_34_2022.pdf",
@@ -80,9 +80,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_fr_32_33_34_2022.pdf",
-    "scraped_at": "2026-06-03T09:52:26.060021+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_appeal_60_2021.pdf",
@@ -97,9 +97,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_appeal_60_2021.pdf",
-    "scraped_at": "2026-06-03T09:52:27.116727+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_59_60_61_63_2020.pdf",
@@ -114,9 +114,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_59_60_61_63_2020.pdf",
-    "scraped_at": "2026-06-03T09:52:28.182953+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_fr_400_2021.pdf",
@@ -131,9 +131,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_fr_400_2021.pdf",
-    "scraped_at": "2026-06-03T09:52:29.250135+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_chc_appeal_34_2017.pdf",
@@ -385,9 +385,9 @@
     ],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_chc_appeal_34_2017.pdf",
-    "scraped_at": "2026-06-03T09:52:30.349190+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_fr_71_2020.pdf",
@@ -402,9 +402,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_fr_71_2020.pdf",
-    "scraped_at": "2026-06-03T09:52:31.490391+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_fr_394_2007.pdf",
@@ -419,9 +419,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_fr_394_2007.pdf",
-    "scraped_at": "2026-06-03T09:52:32.540084+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_fr_165_2024.pdf",
@@ -436,9 +436,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_fr_165_2024.pdf",
-    "scraped_at": "2026-06-03T09:52:33.607322+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_appeal_47_2018.pdf",
@@ -453,9 +453,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_appeal_47_2018.pdf",
-    "scraped_at": "2026-06-03T09:52:34.659570+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_appeal_1_2022.pdf",
@@ -470,9 +470,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_appeal_1_2022.pdf",
-    "scraped_at": "2026-06-03T09:52:35.739495+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_fr_8_2025.pdf",
@@ -487,9 +487,9 @@
     "keywords": [],
     "legislation": [],
     "source": "both",
-    "downloaded": true,
-    "local_path": "/Users/laksh/Desktop/ROScribe/data/sc_judgements/sc_fr_8_2025.pdf",
-    "scraped_at": "2026-06-03T09:52:36.868914+00:00"
+    "downloaded": false,
+    "local_path": "",
+    "scraped_at": ""
   },
   {
     "filename": "sc_chc_appeal_26_2017-1.pdf",
