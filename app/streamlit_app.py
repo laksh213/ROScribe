@@ -171,12 +171,15 @@ with tab_breakdown:
             st.caption(sel["parties"][:240] + ("…" if len(sel["parties"]) > 240 else ""))
             if sel.get("pdf_url"):
                 st.link_button("Open source PDF ↗", sel["pdf_url"])
-        if st.button("Generate breakdown", type="primary"):
-            from src.analyze import analyze_pdf
+        c1, c2 = st.columns(2)
+        gen = c1.button("Generate / view breakdown", type="primary", use_container_width=True)
+        regen = c2.button("Regenerate", use_container_width=True)
+        if gen or regen:
+            from src.analyze import analyze_case
 
             try:
-                with st.spinner(f"Analysing with {settings.llm_provider}…"):
-                    st.session_state["bd"] = analyze_pdf(sel["local_path"]).model_dump()
+                with st.spinner(f"Analysing with {settings.llm_provider}… (cached after first run)"):
+                    st.session_state["bd"] = analyze_case(sel["case_no"], force=regen).model_dump()
             except Exception as e:
                 st.session_state["bd"] = None
                 st.error(str(e))
