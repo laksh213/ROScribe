@@ -62,8 +62,50 @@ def init_db() -> sqlite3.Connection:
             judges TEXT, keywords TEXT, legislation TEXT, pdf_url TEXT,
             local_path TEXT, n_chunks INTEGER, indexed_at TEXT)"""
     )
+    # Collection-aware index state — survives crashes; correct across embedder switches.
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS indexed (
+            collection TEXT, source TEXT, key TEXT, n_chunks INTEGER, indexed_at TEXT,
+            PRIMARY KEY (collection, source, key))"""
+    )
+    # On-demand breakdown cache.
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS analyses (
+            case_no TEXT PRIMARY KEY, model TEXT, json TEXT, created_at TEXT)"""
+    )
     con.commit()
     return con
+
+
+def is_indexed(con: sqlite3.Connection, key: str, source: str) -> bool:
+    """Has this file's chunks already been embedded into the current collection?"""
+    return con.execute(
+        "SELECT 1 FROM indexed WHERE collection=? AND source=? AND key=?",
+        (COLLECTION, source, key),
+    ).fetchone() is not None
+
+
+def mark_indexed(con: sqlite3.Connection, key: str, source: str, n_chunks: int) -> None:
+    con.execute(
+        "INSERT OR REPLACE INTO indexed (collection, source, key, n_chunks, indexed_at) "
+        "VALUES (?,?,?,?,?)",
+        (COLLECTION, source, key, n_chunks, datetime.now().isoformat(timespec="seconds")),
+    )
+    con.commit()
+
+
+def get_analysis(con: sqlite3.Connection, case_no: str) -> dict | None:
+    row = con.execute("SELECT json FROM analyses WHERE case_no=?", (case_no,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def save_analysis(con: sqlite3.Connection, case_no: str, data: dict, model: str) -> None:
+    con.execute(
+        "INSERT OR REPLACE INTO analyses (case_no, model, json, created_at) VALUES (?,?,?,?)",
+        (case_no, model, json.dumps(data, ensure_ascii=False),
+         datetime.now().isoformat(timespec="seconds")),
+    )
+    con.commit()
 
 
 def upsert_judgement(con: sqlite3.Connection, meta: dict, n_chunks: int) -> None:
