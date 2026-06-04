@@ -140,6 +140,27 @@ def analyze_pdf(pdf_path: str) -> CaseAnalysis:
     return analyze_text(case_no_from_filename(pdf_path), text)
 
 
+def analyze_case(case_no: str, force: bool = False) -> CaseAnalysis:
+    """On-demand + cached breakdown: analyze a judgement once, reuse thereafter."""
+    from . import store
+
+    con = store.init_db()
+    if not force:
+        cached = store.get_analysis(con, case_no)
+        if cached:
+            return CaseAnalysis.model_validate(cached)
+    row = con.execute(
+        "SELECT local_path FROM judgements WHERE case_no=? OR filename=? LIMIT 1",
+        (case_no, case_no),
+    ).fetchone()
+    if not row or not row[0]:
+        raise FileNotFoundError(f"No indexed judgement found for {case_no!r}")
+    ca = analyze_pdf(row[0])
+    model = "llamacpp-gguf" if settings.llm_provider == "llamacpp" else settings.llm_model
+    store.save_analysis(con, case_no, ca.model_dump(mode="json"), f"{settings.llm_provider}:{model}")
+    return ca
+
+
 def precedent_test(case_x: str, scenario: str, k: int = 8) -> str:
     """3-step precedent evaluation (retrieve -> compare -> validate vs notes)."""
     from .retrieve import retrieve
