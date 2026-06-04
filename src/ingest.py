@@ -145,31 +145,45 @@ def _clean_subject(name: str) -> str:
     return re.sub(r"^\d+\s*-\s*", "", name).strip()
 
 
+def list_note_files(directory: str) -> list[tuple[Path, str, str]]:
+    """Return (path, subject, category) for every supported note file."""
+    root = Path(directory)
+    out: list[tuple[Path, str, str]] = []
+    for p in sorted(root.rglob("*")):
+        if (
+            p.is_file()
+            and p.suffix.lower() in NOTE_EXTS
+            and not p.name.startswith("~$")
+            and not p.name.startswith(".")
+        ):
+            parts = p.relative_to(root).parts
+            subject = _clean_subject(parts[0]) if parts else "General"
+            category = parts[1] if len(parts) > 2 else "General"
+            out.append((p, subject, category))
+    return out
+
+
+def chunks_for_note(path: Path, subject: str, category: str) -> list[Chunk]:
+    """Extract + chunk one note file, tagged with subject / category."""
+    label = f"{subject} / {category} / {path.name}"
+    meta = {"subject": subject, "category": category, "filename": path.name}
+    chunks = chunk_pages(extract_document(str(path)), case_no=label, source="personal_repo")
+    for c in chunks:
+        c.metadata.update(meta)
+    return chunks
+
+
 def load_personal_repo(directory: str, limit: int | None = None) -> list[Chunk]:
     """Walk the notes folder; tag chunks with Subject / Category from the layout."""
-    root = Path(directory)
-    files = [
-        p for p in sorted(root.rglob("*"))
-        if p.is_file() and p.suffix.lower() in NOTE_EXTS
-        and not p.name.startswith("~$") and not p.name.startswith(".")
-    ]
+    files = list_note_files(directory)
     if limit:
         files = files[:limit]
-
     chunks: list[Chunk] = []
-    for p in files:
-        parts = p.relative_to(root).parts
-        subject = _clean_subject(parts[0]) if parts else "General"
-        category = parts[1] if len(parts) > 2 else "General"
-        label = f"{subject} / {category} / {p.name}"
+    for p, subject, category in files:
         try:
-            pages = extract_document(str(p))
+            chunks.extend(chunks_for_note(p, subject, category))
         except Exception:
             continue  # unreadable file — skip rather than fail the batch
-        meta = {"subject": subject, "category": category, "filename": p.name}
-        for c in chunk_pages(pages, case_no=label, source="personal_repo"):
-            c.metadata.update(meta)
-            chunks.append(c)
     return chunks
 
 
