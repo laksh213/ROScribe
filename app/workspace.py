@@ -85,7 +85,7 @@ def find_case(cited: str) -> str | None:
     return None
 
 
-ui.add_head_html("""
+HEAD_CSS = """
 <style>
   body { background:#f3f2ee; }
   .case-title { font-family: Georgia,'Times New Roman',serif; }
@@ -93,12 +93,13 @@ ui.add_head_html("""
   .doc-pane { background:#fffdf7; }
   .sec { font-family:Georgia,serif; font-weight:700; color:#0f766e; margin-top:.7rem; margin-bottom:.1rem; }
 </style>
-""")
-ui.colors(primary="#0f766e")
+"""
 
 
 @ui.page("/")
 def workspace():
+    ui.add_head_html(HEAD_CSS)
+    ui.colors(primary="#0f766e")
     state = {"case": None, "page": None}
 
     # ----------------------------- PDF (left) ----------------------------- #
