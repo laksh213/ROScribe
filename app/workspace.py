@@ -112,9 +112,9 @@ def workspace():
             cn, _d, _parties, fn = state["case"]
             ui.label(cn).classes("text-sm font-bold case-title mb-1")
             src = f"/pdf/{fn}" + (f"#page={state['page']}" if state["page"] else "")
-            ui.html(
-                f'<iframe src="{src}" style="width:100%;height:calc(100vh - 120px);'
-                'border:1px solid #e5e7eb;border-radius:6px"></iframe>'
+            # ui.html() sanitizes <iframe>, so build it as a real element instead.
+            ui.element("iframe").props(f'src="{src}"').classes("w-full").style(
+                "height:calc(100vh - 120px);border:1px solid #e5e7eb;border-radius:6px"
             )
 
     # ------------------------- Breakdown (center) ------------------------- #
