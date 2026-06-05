@@ -121,7 +121,37 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
+def _fit_to_context(text: str, max_output: int = 4096) -> str:
+    """Truncate an over-long judgment to fit the local context window.
+
+    Keeps the front matter and the end (ratio / final order) — what a breakdown
+    needs most — and drops the long middle. Anthropic's large context is left alone.
+    """
+    provider = settings.llm_provider.lower()
+    if provider == "anthropic":
+        return text
+    budget = max(1024, settings.ollama_num_ctx - max_output - 1800)  # reserve output + system
+    if provider == "llamacpp":
+        try:
+            llm = _get_llama()
+            toks = llm.tokenize(text.encode("utf-8", "ignore"), add_bos=False)
+            if len(toks) <= budget:
+                return text
+            head = int(budget * 0.6)
+            tail = budget - head - 40
+            sep = llm.tokenize(b"\n\n[... lengthy middle omitted to fit the model context ...]\n\n", add_bos=False)
+            return llm.detokenize(toks[:head] + sep + toks[-tail:]).decode("utf-8", "ignore")
+        except Exception:
+            pass
+    budget_chars = int(budget * 3.5)  # ~chars/token fallback
+    if len(text) <= budget_chars:
+        return text
+    h = int(budget_chars * 0.6)
+    return text[:h] + "\n\n[... lengthy middle omitted to fit context ...]\n\n" + text[-(budget_chars - h):]
+
+
 def analyze_text(case_no: str, full_text: str) -> CaseAnalysis:
+    full_text = _fit_to_context(full_text, max_output=4096)
     user = (
         f"Case No: {case_no}\n\n"
         "Produce the case breakdown as ONE JSON object matching CaseAnalysis in "
