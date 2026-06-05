@@ -334,4 +334,5 @@ def workspace():
         open_case(init[0][0])
 
 
-ui.run(host="127.0.0.1", port=8080, show=False, reload=False, title="ROScribe — Scholar's Archive")
+ui.run(host="127.0.0.1", port=8080, show=False, reload=False,
+       storage_secret=STORAGE_SECRET, title="ROScribe — Scholar's Archive")
