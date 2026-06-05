@@ -27,7 +27,7 @@ echo " up."
 
 # 3. open the public Cloudflare tunnel
 pkill -f "cloudflared tunnel" 2>/dev/null || true
-cloudflared tunnel --url http://localhost:8080 > /tmp/cloudflared.log 2>&1 &
+cloudflared tunnel --url http://127.0.0.1:8080 > /tmp/cloudflared.log 2>&1 &
 disown
 URL=""
 for _ in $(seq 1 40); do
