@@ -200,7 +200,11 @@ with ui.row().classes("w-full no-wrap gap-0").style("height: calc(100vh - 56px)"
     state.right = ui.column().classes("w-1/4 h-full overflow-auto border-l p-3 bg-gray-50")
 
 render_results("")
-render_center()
-render_right()
+_initial = list_cases(1)
+if _initial:
+    load_case(_initial[0][0])
+else:
+    render_center()
+    render_right()
 
 ui.run(host="127.0.0.1", port=8080, show=False, reload=False, title="ROScribe — Scholar's Archive")
