@@ -15,13 +15,20 @@ legal intelligence.
 
 ## Output schema (one JSON object per case — see src/schema.py)
 - `metadata`: case_no, date, judges, parties, court_division, jurisdiction_tags, keywords
+  - `judges`: the **complete bench / coram** — list every judge named in the
+    "Before :" / "Coram" / "Present :" panel (often 1–3, e.g. a Divisional
+    Bench), not only the judge who authored the opinion. Keep each judge's
+    suffix (`J.`, `C.J.`, `PC, J.`).
+  - `parties`: full cause title; where the report lists **counsel** ("Counsel" /
+    "appearing for"), append them after the parties (e.g. "… | Counsel: A.B.,
+    PC, with C.D. for the appellant; E.F. for the respondent").
 - `topics_discussed`: the legal topics/areas the judgment engages
 - `factual_matrix`: chronological summary of events (the facts)
 - `legal_issues`: the specific legal questions before the court
 - `evidence_weighing`: key evidence relied on and its evidentiary value
 - `precedent_index`: every cited case, tagged Applied / Distinguished /
   Overruled / Followed (the case law cited)
-- `legislation_cited`: statutes / acts / articles relied on
+- `legislation_cited`: specific statutes, acts, sections, articles, or clauses relied on (e.g. "Section 12 of the Prescription Ordinance", "Article 126 of the Constitution"), rather than just the generic Act name
 - `deciding_factors`: the key factors that drove the outcome
 - `ratio_decidendi`: the binding legal reasoning
 - `final_order`: operative part of the judgment (the final judgement)

@@ -38,7 +38,7 @@ def _get_llama():
         _LLAMA = Llama(
             model_path=settings.llamacpp_model_path,
             n_ctx=settings.ollama_num_ctx,
-            n_gpu_layers=-1,  # offload to Metal where available
+            n_gpu_layers=settings.llamacpp_gpu_layers,  # offload to Metal where available / configured
             verbose=False,
         )
     return _LLAMA

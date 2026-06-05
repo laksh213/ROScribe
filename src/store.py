@@ -26,30 +26,38 @@ from .config import settings
 from .ingest import Chunk
 
 
-def _embedding_function():
-    # ROSCRIBE_EMBEDDER=default forces the light MiniLM embedder / collection,
-    # even when sentence-transformers is installed (used while the bge-m3
-    # re-index is incomplete).
+def _embedder_tag() -> str:
+    """Which embedder/collection — computed WITHOUT loading the model."""
     if os.getenv("ROSCRIBE_EMBEDDER", "").lower() == "default":
-        return None, "default"
+        return "default"
     try:
         import sentence_transformers  # noqa: F401
+
+        return "bge_m3"
+    except Exception:
+        return "default"
+
+
+_TAG = _embedder_tag()
+COLLECTION = f"judgements_{_TAG}"
+_EF = None  # the heavy model is loaded lazily, only when actually embedding
+
+
+def _get_ef():
+    global _EF
+    if _EF is None and _TAG == "bge_m3":
         from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
-        return SentenceTransformerEmbeddingFunction(model_name=settings.embedding_model), "bge_m3"
-    except Exception:
-        return None, "default"  # Chroma default: all-MiniLM-L6-v2 (ONNX, English)
-
-
-_EF, _TAG = _embedding_function()
-COLLECTION = f"judgements_{_TAG}"
+        _EF = SentenceTransformerEmbeddingFunction(model_name=settings.embedding_model)
+    return _EF  # None → Chroma's built-in default embedder
 
 
 def get_collection():
     client = chromadb.PersistentClient(path=settings.chroma_dir)
     kwargs = {"name": COLLECTION, "metadata": {"hnsw:space": "cosine"}}
-    if _EF is not None:
-        kwargs["embedding_function"] = _EF
+    ef = _get_ef()
+    if ef is not None:
+        kwargs["embedding_function"] = ef
     return client.get_or_create_collection(**kwargs)
 
 
@@ -153,3 +161,135 @@ def similarity_search(query: str, k: int = 20, source: str | None = None) -> lis
     for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
         hits.append({"text": doc, "meta": meta, "distance": dist})
     return hits
+
+
+# --------------------- keyword / full-text search ------------------------ #
+def build_fts(collection_name: str = "judgements_bge_m3", rebuild: bool = False) -> None:
+    """One-time: build a SQLite FTS5 index over chunk text for keyword search.
+
+    Reads documents straight from Chroma (no embedding model needed)."""
+    import chromadb
+
+    con = sqlite3.connect(settings.sqlite_path)
+    if rebuild:
+        con.execute("DROP TABLE IF EXISTS chunks_fts")
+    con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(case_no, source, page UNINDEXED, text)")
+    con.commit()
+    if con.execute("SELECT count(*) FROM chunks_fts").fetchone()[0] and not rebuild:
+        print("FTS already built."); con.close(); return
+
+    col = chromadb.PersistentClient(path=settings.chroma_dir).get_collection(collection_name)
+    total = col.count()
+    print(f"Building FTS over {total} chunks from {collection_name} …", flush=True)
+    BATCH, done = 5000, 0
+    for off in range(0, total, BATCH):
+        res = col.get(include=["documents", "metadatas"], limit=BATCH, offset=off)
+        rows = [
+            (m.get("case_no", ""), m.get("source", ""), str(m.get("page", "")), d or "")
+            for d, m in zip(res["documents"], res["metadatas"])
+        ]
+        con.executemany("INSERT INTO chunks_fts (case_no, source, page, text) VALUES (?,?,?,?)", rows)
+        con.commit()
+        done += len(rows)
+        print(f"  {done}/{total}", flush=True)
+    con.close()
+    print("FTS built.", flush=True)
+
+
+def keyword_search(query: str, limit: int = 60) -> list[dict]:
+    """Exact/keyword search: judge & party names + official keywords (metadata)
+    plus full-text phrase matches in the judgment text. Returns judgements."""
+    import re
+
+    q = (query or "").strip()
+    if not q:
+        return []
+    con = sqlite3.connect(settings.sqlite_path)
+    results: dict[str, dict] = {}
+    like = f"%{q}%"
+    for cn, date, parties in con.execute(
+        "SELECT case_no, date, parties FROM judgements "
+        "WHERE case_no LIKE ? OR parties LIKE ? OR judges LIKE ? OR keywords LIKE ? OR legislation LIKE ? "
+        "ORDER BY date DESC LIMIT ?",
+        (like, like, like, like, like, limit),
+    ):
+        results[cn] = {"case_no": cn, "date": date or "", "snippet": (parties or "")[:110], "why": "metadata"}
+
+    tokens = re.findall(r"[A-Za-z0-9]+", q)
+    if tokens:
+        try:
+            for cn, date, snip in con.execute(
+                "SELECT j.case_no, j.date, snippet(chunks_fts, 3, '«', '»', '…', 12) "
+                "FROM chunks_fts f JOIN judgements j ON j.case_no = f.case_no "
+                "WHERE chunks_fts MATCH ? LIMIT ?",
+                (" ".join(tokens), limit * 4),
+            ):
+                results.setdefault(cn, {"case_no": cn, "date": date or "", "snippet": snip, "why": "text"})
+        except Exception:
+            pass
+    con.close()
+    meta = sorted((r for r in results.values() if r["why"] == "metadata"), key=lambda r: r["date"], reverse=True)
+    text = sorted((r for r in results.values() if r["why"] == "text"), key=lambda r: r["date"], reverse=True)
+    return (meta + text)[:limit]
+
+
+# Curated legal-area taxonomy (real practice areas) -> case-no prefixes + the
+# legal keywords that identify each area in the judgment text.
+LEGAL_AREAS: dict[str, dict] = {
+    "Fundamental Rights": {"prefix": ["SC/FR", "SC FR"], "terms": ["fundamental rights", "article 12", "article 126", "article 14", "equal protection"]},
+    "Constitutional & Administrative": {"terms": ["writ of certiorari", "mandamus", "judicial review", "ultra vires", "natural justice", "legitimate expectation"]},
+    "Labour & Employment": {"terms": ["labour tribunal", "termination of employment", "reinstatement", "industrial dispute", "workman", "unfair dismissal", "compensation in lieu"]},
+    "Land & Property": {"terms": ["title to land", "ejectment", "deed of transfer", "co-owner", "encroachment", "declaration of title"]},
+    "Partition": {"terms": ["partition action", "partition", "co-owners", "preliminary plan"]},
+    "Prescription & Laches": {"terms": ["prescription", "laches", "adverse possession", "prescriptive title"]},
+    "Trusts": {"terms": ["constructive trust", "resulting trust", "fiduciary", "trustee", "trust property"]},
+    "Testamentary & Probate": {"terms": ["last will", "executor", "administrator", "intestate", "probate", "letters of administration"]},
+    "Contract": {"terms": ["breach of contract", "consideration", "specific performance", "agreement to sell", "rescission"]},
+    "Delict & Negligence": {"terms": ["negligence", "delict", "duty of care", "damages", "vicarious liability"]},
+    "Defamation": {"terms": ["defamation", "libel", "slander"]},
+    "Criminal Law & Procedure": {"terms": ["indictment", "penal code", "criminal procedure", "conviction", "culpable homicide", "sentence"]},
+    "Bail": {"terms": ["bail", "remand", "anticipatory bail"]},
+    "Evidence": {"terms": ["burden of proof", "admissibility", "evidence ordinance", "hearsay", "circumstantial evidence", "dock identification"]},
+    "Civil Procedure": {"terms": ["civil procedure code", "summons", "plaint", "interlocutory", "summary procedure", "default judgment"]},
+    "Commercial & Company": {"prefix": ["SC/CHC", "SC CHC"], "terms": ["company", "shares", "winding up", "director", "commercial high court", "shareholder"]},
+    "Banking & Finance": {"terms": ["mortgage", "promissory note", "guarantee", "recovery of loans", "parate execution", "hypothecary"]},
+    "Tax & Revenue": {"terms": ["income tax", "value added tax", "customs", "revenue", "tax assessment"]},
+    "Intellectual Property": {"terms": ["trademark", "patent", "copyright", "passing off", "infringement"]},
+    "Family & Matrimonial": {"terms": ["matrimonial", "divorce", "maintenance", "custody", "matrimonial home", "judicial separation"]},
+    "Tenancy & Rent": {"terms": ["rent act", "tenant", "premises", "ejectment of tenant", "controlled premises"]},
+    "Election Law": {"terms": ["election petition", "election", "franchise", "polling"]},
+    "Bribery & Corruption": {"terms": ["bribery", "corruption", "commission to investigate allegations"]},
+    "Arbitration": {"terms": ["arbitration", "arbitral award", "arbitration act"]},
+    "Insurance": {"terms": ["insurance", "insurer", "policy of insurance", "indemnity"]},
+    "Citizenship & Immigration": {"terms": ["citizenship", "immigration", "passport", "emigration"]},
+    "Writ Applications": {"terms": ["writ", "certiorari", "mandamus", "prohibition", "quo warranto"]},
+}
+
+
+def area_search(area: str, limit: int = 120) -> list[dict]:
+    """Cases for a curated legal area — by case-no prefix and/or FTS keywords."""
+    spec = LEGAL_AREAS.get(area)
+    if not spec:
+        return []
+    con = sqlite3.connect(settings.sqlite_path)
+    results: dict[str, dict] = {}
+    for pfx in spec.get("prefix", []):
+        for cn, date, parties in con.execute(
+            "SELECT case_no, date, parties FROM judgements WHERE case_no LIKE ? ORDER BY date DESC LIMIT ?",
+            (pfx + "%", limit),
+        ):
+            results[cn] = {"case_no": cn, "date": date or "", "snippet": (parties or "")[:100]}
+    if spec.get("terms"):
+        fts_q = " OR ".join(f'"{t}"' for t in spec["terms"])
+        try:
+            for cn, date, snip in con.execute(
+                "SELECT j.case_no, j.date, snippet(chunks_fts, 3, '«', '»', '…', 12) "
+                "FROM chunks_fts f JOIN judgements j ON j.case_no = f.case_no "
+                "WHERE chunks_fts MATCH ? LIMIT ?",
+                (fts_q, limit * 4),
+            ):
+                results.setdefault(cn, {"case_no": cn, "date": date or "", "snippet": snip})
+        except Exception:
+            pass
+    con.close()
+    return sorted(results.values(), key=lambda r: r["date"], reverse=True)[:limit]

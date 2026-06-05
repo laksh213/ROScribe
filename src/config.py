@@ -23,6 +23,7 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     # llamacpp: run a GGUF directly (e.g. an Ollama-downloaded blob) without a server
     llamacpp_model_path: str = os.getenv("LLAMACPP_MODEL_PATH", "")
+    llamacpp_gpu_layers: int = int(os.getenv("LLAMACPP_GPU_LAYERS", "-1"))
     # Anthropic (optional — set LLM_PROVIDER=anthropic to use)
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
