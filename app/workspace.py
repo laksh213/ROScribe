@@ -11,6 +11,7 @@ Run (full corpus — uses .env):   .venv/bin/python app/workspace.py
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -19,8 +20,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config import REPO_ROOT, settings  # noqa: E402
 
-from fastapi.responses import FileResponse, Response  # noqa: E402
-from nicegui import app, run, ui  # noqa: E402
+from fastapi import Request  # noqa: E402
+from fastapi.responses import FileResponse, RedirectResponse, Response  # noqa: E402
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+from nicegui import Client, app, run, ui  # noqa: E402
 
 JUDGE_DIR = REPO_ROOT / "data" / "sc_judgements"
 
