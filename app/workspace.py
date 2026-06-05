@@ -40,6 +40,56 @@ def serve_pdf(name: str):
     )
 
 
+# -------------------- access control (closed user base) ------------------ #
+def _parse_users(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for pair in raw.split(","):
+        if ":" in pair:
+            u, p = pair.split(":", 1)
+            out[u.strip()] = p.strip()
+    return out
+
+
+USERS = _parse_users(os.getenv("ROSCRIBE_USERS", ""))
+STORAGE_SECRET = os.getenv("ROSCRIBE_STORAGE_SECRET", "roscribe-change-this-secret")
+UNRESTRICTED = {"/login"}
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Gate the app pages behind a login; judgment PDFs (public docs) stay open."""
+
+    async def dispatch(self, request: Request, call_next):
+        if not app.storage.user.get("authenticated", False):
+            if request.url.path in Client.page_routes.values() and request.url.path not in UNRESTRICTED:
+                app.storage.user["referrer_path"] = request.url.path
+                return RedirectResponse("/login")
+        return await call_next(request)
+
+
+app.add_middleware(AuthMiddleware)
+
+
+@ui.page("/login")
+def login():
+    if app.storage.user.get("authenticated", False):
+        return RedirectResponse("/")
+
+    def attempt():
+        if password.value and USERS.get(username.value) == password.value:
+            app.storage.user.update({"username": username.value, "authenticated": True})
+            ui.navigate.to(app.storage.user.get("referrer_path", "/"))
+        else:
+            ui.notify("Invalid credentials", color="negative")
+
+    with ui.card().classes("absolute-center w-80 items-stretch"):
+        ui.label("⚖️ ROScribe").classes("text-xl font-bold self-center")
+        ui.label("Sri Lankan Legal Insight Platform").classes("text-xs text-gray-500 self-center mb-2")
+        username = ui.input("Username").props("outlined dense").on("keydown.enter", attempt)
+        password = ui.input("Password", password=True, password_toggle_button=True).props("outlined dense").on("keydown.enter", attempt)
+        ui.button("Log in", on_click=attempt).props("color=primary")
+    return None
+
+
 # ------------------------------ data ------------------------------------- #
 def _con() -> sqlite3.Connection:
     return sqlite3.connect(settings.sqlite_path)
