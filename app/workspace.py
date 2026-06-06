@@ -477,7 +477,7 @@ def build_workspace(demo: bool = False):
     ui.add_head_html(HEAD_CSS)
     ui.colors(primary="#1a73e8", secondary="#00796b")
     ui.dark_mode().disable()
-    state = {"case": None, "page": None}
+    state = {"case": None, "page": None, "chat_open": False, "workspace_active": False}
     containers = {"bookmarks": None}
 
     def refresh_bookmarks_ui():
@@ -618,6 +618,136 @@ def build_workspace(demo: bool = False):
         finally:
             render_breakdown()
 
+    def call_chatbot_api(cn, query):
+        from src.config import REPO_ROOT, settings
+        from src.ingest import extract_pages
+        from src.analyze import _chat, _fit_to_context
+        import sqlite3
+
+        # Check memory cache first
+        case_texts = state.setdefault("case_texts", {})
+        if cn not in case_texts:
+            con = sqlite3.connect(settings.sqlite_path)
+            row = con.execute("SELECT filename FROM judgements WHERE case_no=? LIMIT 1", (cn,)).fetchone()
+            con.close()
+            if not row:
+                raise RuntimeError(f"Judgment file not found for case: {cn}")
+                
+            pdf_path = REPO_ROOT / "data" / "sc_judgements" / row[0]
+            pages = extract_pages(str(pdf_path), ocr_langs=settings.tesseract_langs)
+            text = "\n".join(pages)
+            fitted = _fit_to_context(text)
+            case_texts[cn] = fitted
+            
+        judgment_text = case_texts[cn]
+        
+        system_text = (
+            "You are a helpful, professional legal research assistant.\n"
+            "You are provided with the text of a Supreme Court judgment below.\n"
+            "Answer the user's questions about this judgment accurately, objectively, and based strictly on the judgment text.\n"
+            "If the answer cannot be found or inferred from the text, state that you do not have enough information.\n\n"
+            "Judgment Text:\n"
+            f"{judgment_text}"
+        )
+        
+        messages = state["chats"].get(cn, [])
+        history_str = ""
+        for msg in messages[:-1]: # exclude the latest query
+            role = "User" if msg["role"] == "user" else "Assistant"
+            history_str += f"{role}: {msg['content']}\n"
+            
+        user_text = ""
+        if history_str:
+            user_text += f"Conversation history so far:\n{history_str}\n"
+        user_text += f"Latest User Question: {query}"
+        
+        reply = _chat(system_text, user_text)
+        return reply
+
+    @ui.refreshable
+    def floating_chat_widget():
+        if not state["case"]:
+            return
+            
+        cn = state["case"][0]
+        
+        # Floating Toggle Button (elongated, bottom-right)
+        btn_text = "Close" if state["chat_open"] else "Ask ROS"
+        icon = "close" if state["chat_open"] else "chat"
+        color = "red" if state["chat_open"] else "primary"
+        
+        ui.button(btn_text, icon=icon, on_click=lambda: (state.update({"chat_open": not state["chat_open"]}), floating_chat_widget.refresh())).props(
+            f"color={color} rounded"
+        ).style(
+            "position: fixed; bottom: 50px; right: 24px; z-index: 9999; padding: 0 20px; height: 46px; font-size: 13px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 23px; box-shadow: 0 4px 16px rgba(0,0,0,0.2);"
+        )
+        
+        # Floating Chat Dialog Card (opens above the button)
+        if state["chat_open"]:
+            with ui.card().style(
+                "position: fixed; bottom: 120px; right: 24px; width: 360px; height: 480px; z-index: 9999; "
+                "border-radius: 16px; border: 1px solid #dadce0; box-shadow: 0 8px 32px rgba(0,0,0,0.15); "
+                "background: #ffffff; display: flex; flex-direction: column; overflow: hidden;"
+            ).classes("p-0"):
+                # Header row
+                with ui.row().classes("w-full items-center justify-between bg-primary text-white p-3").style("flex-shrink: 0;"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon("chat_bubble_outline", size="20px")
+                        with ui.column().classes("gap-1"):
+                            ui.label("Ask ROS about case:").classes("text-[10px] opacity-90 uppercase tracking-wider font-bold leading-none")
+                            ui.label(cn).classes("text-xs font-bold leading-none text-amber-300 truncate").style("max-width: 220px;")
+                    ui.button(icon="close", on_click=lambda: (state.update({"chat_open": False}), floating_chat_widget.refresh())).props("flat round dense color=white").classes("text-xs")
+                
+                # Chat History Area
+                messages = state.setdefault("chats", {}).setdefault(cn, [])
+                scroll = ui.scroll_area().classes("flex-grow w-full p-3 bg-gray-50")
+                with scroll:
+                    if not messages:
+                        ui.label("Ask me anything about this judgement. For example:\n- What are the main issues in this case?\n- Who was the appellant and what did they argue?\n- Summarize the final decision.").classes("text-gray-400 text-xs whitespace-pre-line p-2 leading-relaxed")
+                    else:
+                        for msg in messages:
+                            if msg["role"] == "user":
+                                ui.chat_message(msg["content"], sent=True, name="You").classes("text-xs")
+                            else:
+                                ui.chat_message(msg["content"], sent=False, name="ROS AI").classes("text-xs")
+                                
+                    if state.get("chat_loading") == cn:
+                        with ui.row().classes("items-center gap-2 pl-2 mt-2"):
+                            ui.spinner(size="sm")
+                            ui.label("ROS AI is thinking...").classes("text-xs text-gray-500 italic")
+                
+                scroll.scroll_to(percent=1.0)
+                
+                # Bottom Input Area
+                with ui.row().classes("w-full items-center gap-2 p-2 bg-white border-t no-wrap").style("border-color: #dadce0; flex-shrink: 0;"):
+                    chat_input = ui.input(placeholder="Ask a question about this case...").props("outlined dense").classes("flex-grow text-xs")
+                    
+                    async def on_send():
+                        val = chat_input.value.strip()
+                        if not val:
+                            return
+                        chat_input.value = ""
+                        messages.append({"role": "user", "content": val})
+                        state["chat_loading"] = cn
+                        floating_chat_widget.refresh()
+                        
+                        try:
+                            reply = await run.io_bound(call_chatbot_api, cn, val)
+                            messages.append({"role": "assistant", "content": reply})
+                        except Exception as e:
+                            messages.append({"role": "assistant", "content": f"Error calling AI: {e}"})
+                        finally:
+                            state["chat_loading"] = None
+                            floating_chat_widget.refresh()
+                            
+                    chat_input.on("keydown.enter", on_send)
+                    ui.button(icon="send", on_click=on_send).props("flat round dense color=primary").classes("hover:bg-blue-50")
+                    
+                    def clear_history():
+                        state["chats"][cn] = []
+                        floating_chat_widget.refresh()
+                    ui.button(icon="delete_outline", on_click=clear_history).props("flat round dense color=grey-7").classes("hover:bg-gray-100")
+
     def render_breakdown():
         breakdown_pane.clear()
         with breakdown_pane:
@@ -679,7 +809,7 @@ def build_workspace(demo: bool = False):
                     with ui.column().classes("gap-0.5"):
                         ui.label("Parties").classes("text-[10px] uppercase tracking-wider font-bold text-gray-400")
                         ui.label(m["parties"]).classes("text-xs font-medium text-gray-700 leading-normal case-title")
-            
+
             if m.get("keywords"):
                 ui.label("Keywords").classes("text-[10px] uppercase font-bold tracking-wider text-gray-400 mt-2 pl-1")
                 chips(m["keywords"][:14], "blue-9")
@@ -716,8 +846,6 @@ def build_workspace(demo: bool = False):
                     for li in bd["legal_issues"][:6]:
                         ui.label(f"• {li.get('question') if isinstance(li, dict) else li}").classes("body-text pl-2 mb-1")
                 
-
-                
                 sec("Ratio Decidendi")
                 ui.label(bd.get("ratio_decidendi") or "—").classes("body-text mb-3")
                 
@@ -727,9 +855,7 @@ def build_workspace(demo: bool = False):
                         ui.label(f"• {d}").classes("body-text pl-2 mb-1")
                 
                 if bd.get("precedent_index"):
-                    with ui.row().classes("w-full items-center justify-between no-wrap"):
-                        sec("Citations & Distinctions")
-                        ui.button("Visual Map", on_click=lambda: show_graph(cn)).props("flat dense color=primary icon=bubble_chart").classes("text-xs")
+                    sec("Citations & Distinctions")
                     for p in bd["precedent_index"][:12]:
                         cited, tr = p.get("cited_case", ""), p.get("treatment", "")
                         target = find_case(cited)
@@ -753,7 +879,6 @@ def build_workspace(demo: bool = False):
                 if not demo and bd.get("academic_synthesis") and bd["academic_synthesis"] != NOT_AVAILABLE:
                     sec("Scholar's Note")
                     ui.label(bd["academic_synthesis"]).classes("body-text mb-2")
-                
                 if not demo:
                     with ui.row().classes("w-full justify-end items-center"):
                         ui.button("Regenerate Analysis", on_click=lambda: gen_breakdown(cn)).props("flat dense color=primary icon=refresh").classes("text-xs")
@@ -767,8 +892,11 @@ def build_workspace(demo: bool = False):
             ui.notify(f"Case not found: {case_no}", type="warning")
             return
         state["case"], state["page"] = row, page
+        state["workspace_active"] = True
+        update_workspace_visibility()
         render_pdf()
         render_breakdown()
+        floating_chat_widget.refresh()
         set_active("bd")  # mobile: jump to the analysis when a case opens
 
     # ----------------------------- Library -------------------------------- #
@@ -854,6 +982,8 @@ def build_workspace(demo: bool = False):
         if not term:
             show_tree()
             return
+        state["workspace_active"] = True
+        update_workspace_visibility()
         hits = keyword_search(term, 80)
         show_results(hits, f'{len(hits)} results · "{term}"')
 
@@ -867,6 +997,8 @@ def build_workspace(demo: bool = False):
         if not name:
             show_tree()
             return
+        state["workspace_active"] = True
+        update_workspace_visibility()
         hits = cases_by_judge(name)
         show_results(hits, f"Justice {name} · {len(hits)} cases")
 
@@ -874,6 +1006,8 @@ def build_workspace(demo: bool = False):
         if not area:
             show_tree()
             return
+        state["workspace_active"] = True
+        update_workspace_visibility()
         hits = area_search(area)
         show_results(hits, f"{area} · {len(hits)} cases")
 
@@ -897,16 +1031,27 @@ def build_workspace(demo: bool = False):
 
     # mobile-only tab switcher (hidden on desktop via CSS)
     tab_btns: dict = {}
-    with ui.row().classes("mobile-tabs w-full items-stretch gap-0 bg-white border-b shadow-none").style("border-color: #dadce0;"):
+    mobile_tabs_row = ui.row().classes("mobile-tabs w-full items-stretch gap-0 bg-white border-b shadow-none").style("border-color: #dadce0;")
+    with mobile_tabs_row:
         for key, label, icon in [("library", "Library", "menu_book"), ("bd", "Breakdown", "gavel"), ("pdf", "Document", "description")]:
             tab_btns[key] = ui.button(label, icon=icon, on_click=lambda k=key: set_active(k)).props("flat no-caps dense").classes("flex-grow")
 
-    with ui.row().classes("panes-row w-full no-wrap gap-3 p-3 bg-gray-100"):
+    panes_row = ui.row().classes("panes-row w-full no-wrap gap-3 p-3 bg-gray-100")
+    with panes_row:
         pdf_pane = ui.column().classes("pane w-2/5 h-full overflow-auto p-4 bg-white border rounded-xl shadow-sm")
         breakdown_pane = ui.column().classes("pane w-2/5 h-full overflow-auto p-4 bg-white border rounded-xl shadow-sm")
         library = ui.column().classes("pane w-1/5 h-full overflow-auto p-4 bg-white border rounded-xl shadow-sm gap-3")
         with library:
-            ui.label("Library").classes("pane-head")
+            # Welcome header (visible only in welcome state)
+            welcome_header = ui.column().classes("w-full items-center gap-2 mb-6")
+            with welcome_header:
+                ui.label("⚖️ ROScribe").classes("text-3xl font-bold text-primary").style("font-family: 'Lora', Georgia, serif; letter-spacing: 0.1em;")
+                ui.label("Supreme Court of Sri Lanka — Legal Research Portal").classes("text-[10px] text-gray-500 text-center uppercase tracking-wider font-bold")
+            
+            with ui.row().classes("w-full items-center justify-between no-wrap"):
+                library_title = ui.label("Library").classes("pane-head")
+                home_btn = ui.button(icon="home", on_click=lambda: go_home()).props("flat round dense color=grey-7").classes("hover:bg-gray-100")
+
             containers["bookmarks"] = ui.column().classes("w-full mb-1")
             
             # Google Search Input style
@@ -933,6 +1078,37 @@ def build_workspace(demo: bool = False):
     with ui.footer().classes("items-center justify-center bg-white border-t p-1 shadow-none").style("height: 30px; border-color: #dadce0;"):
         ui.label("built by SMS").classes("text-[10px] text-gray-500 font-semibold uppercase tracking-wider")
 
+    def go_home():
+        q.value = ""
+        state["case"] = None
+        state["workspace_active"] = False
+        update_workspace_visibility()
+        show_tree()
+        floating_chat_widget.refresh()
+
+    def update_workspace_visibility():
+        active = state.get("workspace_active", False)
+        
+        pdf_pane.set_visibility(active)
+        breakdown_pane.set_visibility(active)
+        welcome_header.set_visibility(not active)
+        mobile_tabs_row.set_visibility(active)
+        
+        if active:
+            panes_row.classes(remove="justify-center")
+            library.classes(remove="w-full max-w-[800px] mx-auto mt-10 p-6 shadow-md")
+            library.classes(add="w-1/5 p-4 shadow-sm")
+            library_title.classes(remove="text-2xl text-center mb-4")
+            library_title.classes(add="pane-head")
+            home_btn.set_visibility(True)
+        else:
+            panes_row.classes(add="justify-center")
+            library.classes(remove="w-1/5 p-4 shadow-sm")
+            library.classes(add="w-full max-w-[800px] mx-auto mt-10 p-6 shadow-md")
+            library_title.classes(remove="pane-head")
+            library_title.classes(add="text-2xl text-center mb-4")
+            home_btn.set_visibility(False)
+
     def set_active(name):
         for k, pane in {"pdf": pdf_pane, "bd": breakdown_pane, "library": library}.items():
             pane.classes(add="active") if k == name else pane.classes(remove="active")
@@ -943,12 +1119,8 @@ def build_workspace(demo: bool = False):
     refresh_bookmarks_ui()
     render_pdf()
     render_breakdown()
-    init = judgements_by_year()
-    newest = sorted((y for y in init if y != "Undated"), reverse=True)
-    if newest:
-        cases = sorted(init[newest[0]], key=lambda c: c[1], reverse=True)
-        if cases:
-            open_case(cases[0][0])
+    floating_chat_widget()
+    update_workspace_visibility()
     set_active("library")  # default visible pane on mobile (desktop shows all 3)
 
 

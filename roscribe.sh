@@ -70,7 +70,7 @@ status() {
     fi
     # Fallback to ps check if pid file matches
     if [ $app_running -eq 0 ]; then
-        app_pid=$(ps aux | grep -E "python (app/workspace.py|app/streamlit_app.py|streamlit run)" | grep -v grep | awk '{print $2}' | head -n 1)
+        app_pid=$(ps aux | grep -Ei "python (app/workspace.py|app/streamlit_app.py)|streamlit run" | grep -v grep | awk '{print $2}' | head -n 1)
         [ -n "$app_pid" ] && app_running=1
     fi
 
@@ -91,7 +91,7 @@ status() {
         # Check if streamlit or nicegui
         local proc_cmd=$(ps -p "$app_pid" -o args= 2>/dev/null || echo "")
         local ui_type="NiceGUI Workspace"
-        if echo "$proc_cmd" | grep -qE "streamlit_app.py|streamlit run"; then
+        if echo "$proc_cmd" | grep -qEi "streamlit_app.py|streamlit run"; then
             ui_type="Streamlit Search App"
         fi
         echo -e "App Server : ${GREEN}RUNNING${NC} (PID: $app_pid, UI: $ui_type)"
@@ -116,9 +116,19 @@ status() {
             echo -e "Public URL : ${YELLOW}Obtaining... check status again in a moment.${NC}"
         fi
     else
-        echo -e "Public Tunnel: ${RED}STOPPED${NC}"
+        # Check Tailscale Funnel as a fallback
+        local ts_url=""
+        if command -v tailscale >/dev/null 2>&1; then
+            ts_url=$(export PATH="/opt/homebrew/bin:/usr/local/bin:/Applications/Tailscale.app/Contents/MacOS:$PATH"; tailscale funnel status 2>/dev/null | grep -oE 'https://[a-zA-Z0-9.-]+\.ts\.net' | head -n 1 || true)
+        fi
+        if [ -n "$ts_url" ]; then
+            echo -e "Public Tunnel: ${GREEN}RUNNING${NC} (Tailscale Funnel)"
+            echo -e "Public URL : ${BLUE}${ts_url}/${NC}"
+        else
+            echo -e "Public Tunnel: ${RED}STOPPED${NC}"
+        fi
     fi
-    echo -e "========================\n"
+    echo -e "========================"
 
     if [ $app_running -eq 1 ]; then
         return 0
