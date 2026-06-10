@@ -158,3 +158,49 @@ class CaseAnalysis(BaseModel):
         if isinstance(v, list):
             return [{"cited_case": x} if isinstance(x, str) else x for x in v]
         return v
+
+    # --- quality gate ("zap check") -------------------------------------- #
+    # The substantive fields a real judgment breakdown must populate. NOT_AVAILABLE
+    # is the *correct* value for a field genuinely absent from the source, but a
+    # breakdown where almost ALL of these are empty means extraction failed (the
+    # model never digested the text — context overflow, bad JSON, etc.), not that
+    # a 14-page judgment truly lacks facts, a ratio, and an order.
+    _CORE_FIELDS = (
+        "factual_matrix", "ratio_decidendi", "final_order",
+        "legal_issues", "deciding_factors", "topics_discussed", "precedent_index",
+    )
+
+    @staticmethod
+    def _is_filled(value) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip()) and value.strip() != NOT_AVAILABLE
+        if isinstance(value, (list, tuple)):
+            return any(CaseAnalysis._is_filled(x) for x in value)
+        if isinstance(value, LegalIssue):
+            return CaseAnalysis._is_filled(value.question)
+        if isinstance(value, EvidenceItem):
+            return CaseAnalysis._is_filled(value.description)
+        if isinstance(value, PrecedentReference):
+            return CaseAnalysis._is_filled(value.cited_case)
+        return True
+
+    def filled_core_count(self) -> int:
+        """How many of the core narrative fields carry real, non-placeholder content."""
+        return sum(1 for f in self._CORE_FIELDS if self._is_filled(getattr(self, f)))
+
+    def quality(self) -> dict:
+        """A cheap completeness signal for the UI / verifier / caching gate.
+
+        Returns ``{filled, total, ratio, hollow}``. ``hollow`` is True when the
+        breakdown is essentially empty (fewer than 2 core fields populated) —
+        the signal that the extraction failed and should be retried, not cached."""
+        filled = self.filled_core_count()
+        total = len(self._CORE_FIELDS)
+        return {
+            "filled": filled,
+            "total": total,
+            "ratio": round(filled / total, 2),
+            "hollow": filled < 2,
+        }

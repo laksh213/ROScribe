@@ -4,6 +4,7 @@
 #   ./scripts/roscribe.sh stop      # stop the app + take the public URL offline
 #   ./scripts/roscribe.sh status    # what's running + the URL + login
 #   ./scripts/roscribe.sh restart
+#   ./scripts/roscribe.sh update [args]   # fetch + index new judgements, then restart
 #
 # Everything (index, PDFs, breakdown LLM, your notes) stays on THIS machine.
 set -uo pipefail
@@ -42,7 +43,14 @@ start() {
 
 stop() {
   echo "stopping ROScribe…"
-  pkill -f "$APP" 2>/dev/null && echo "  app stopped" || echo "  app not running"
+  if pgrep -f "$APP" >/dev/null 2>&1; then
+    pkill -f "$APP" 2>/dev/null || true
+    for _ in $(seq 1 10); do pgrep -f "$APP" >/dev/null 2>&1 || break; sleep 1; done
+    pgrep -f "$APP" >/dev/null 2>&1 && pkill -9 -f "$APP" 2>/dev/null || true   # force-kill stragglers so restart always redeploys current code
+    echo "  app stopped"
+  else
+    echo "  app not running"
+  fi
   if have_ts; then tailscale funnel reset 2>/dev/null && echo "  public URL offline" || true; fi
 }
 
@@ -58,10 +66,23 @@ status() {
   echo "──────────────────────────────────"
 }
 
+update() {
+  # Fetch + index new judgements, then redeploy so the app serves them.
+  # Forward any extra args (e.g. --since 2026, --limit 20, --dry-run).
+  echo "── ROScribe corpus update ──"
+  if ! .venv/bin/python -m scripts.update_corpus "$@"; then
+    echo "  update failed — app left as-is."; return 1
+  fi
+  # A dry/metadata-only run changes nothing servable; skip the restart for those.
+  case " $* " in *" --dry-run "*|*" --metadata-only "*) echo "  (no restart needed)"; return 0 ;; esac
+  echo "  restarting to serve the new judgements…"; restart
+}
+
 case "${1:-start}" in
   start)   start ;;
   stop)    stop ;;
   restart) stop; sleep 1; start ;;
   status)  status ;;
-  *) echo "usage: $0 {start|stop|status|restart}"; exit 1 ;;
+  update)  shift; update "$@" ;;
+  *) echo "usage: $0 {start|stop|status|restart|update}"; exit 1 ;;
 esac

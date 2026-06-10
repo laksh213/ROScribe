@@ -13,16 +13,21 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sqlite3
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config import REPO_ROOT, settings  # noqa: E402
-from src.ingest import extract_bench  # noqa: E402
+from src.ingest import extract_bench, merge_benches  # noqa: E402
 from src.schema import NOT_AVAILABLE  # noqa: E402
-from src.store import LEGAL_AREAS, area_search, keyword_search  # noqa: E402
+from src.store import (  # noqa: E402
+    LEGAL_AREAS, area_search, citation_search_terms, combined_search, embedder_ready,
+    keyword_search, resolve_citation,
+)
 
 from fastapi import Request  # noqa: E402
 from fastapi.responses import FileResponse, RedirectResponse, Response  # noqa: E402
@@ -32,19 +37,36 @@ from nicegui import Client, app, run, ui  # noqa: E402
 JUDGE_DIR = REPO_ROOT / "data" / "sc_judgements"
 
 
+def _safe_child(base: Path, name: str) -> Path | None:
+    """Resolve `name` strictly inside `base`, or None if it escapes (path
+    traversal). Guards the file-serving routes against `../`, absolute paths,
+    symlinks, and percent-encoded variants that Starlette has already decoded
+    into the path parameter."""
+    if not name or "\x00" in name:
+        return None
+    try:
+        base = base.resolve()
+        candidate = (base / name).resolve()
+        candidate.relative_to(base)          # raises ValueError if outside base
+    except (ValueError, OSError):
+        return None
+    return candidate
+
+
 @app.get("/pdf/{name}")
 def serve_pdf(name: str):
-    p = JUDGE_DIR / name
-    if not p.exists():
+    p = _safe_child(JUDGE_DIR, name)
+    if p is None or not p.is_file() or p.suffix.lower() != ".pdf":
         return Response(status_code=404)
+    safe_dl = re.sub(r"[^A-Za-z0-9._-]+", "_", p.name)
     return FileResponse(str(p), media_type="application/pdf",
-                        headers={"Content-Disposition": f'inline; filename="{name}"'})
+                        headers={"Content-Disposition": f'inline; filename="{safe_dl}"'})
 
 
 @app.get("/logo/{name}")
 def serve_logo(name: str):
-    p = REPO_ROOT / "data" / "logos" / name
-    if not p.exists():
+    p = _safe_child(REPO_ROOT / "data" / "logos", name)
+    if p is None or not p.is_file():
         return Response(status_code=404)
     return FileResponse(str(p))
 
@@ -60,8 +82,33 @@ def _parse_users(raw: str) -> dict[str, str]:
 
 
 USERS = _parse_users(os.getenv("ROSCRIBE_USERS", ""))
-STORAGE_SECRET = os.getenv("ROSCRIBE_STORAGE_SECRET", "roscribe-change-this-secret")
+_DEFAULT_SECRET = "roscribe-change-this-secret"
+STORAGE_SECRET = os.getenv("ROSCRIBE_STORAGE_SECRET", _DEFAULT_SECRET)
+if STORAGE_SECRET == _DEFAULT_SECRET:
+    # A known secret lets anyone forge a signed session cookie → full auth bypass.
+    # scripts/roscribe.sh writes a random one into .env on first start; warn if not.
+    print("⚠️  ROSCRIBE_STORAGE_SECRET is unset — using the INSECURE default. "
+          "Set it in .env before exposing the app (run via scripts/roscribe.sh).")
 UNRESTRICTED = {"/login", "/demo"}
+
+# Brute-force throttle: per-username failed-attempt timestamps (in-memory). After
+# _LOGIN_MAX failures within _LOGIN_WINDOW seconds, further attempts on that
+# username are delayed/blocked until the window slides. Survives cookie-clearing
+# (keyed server-side, not in the session) and can't permanently lock a user out.
+_LOGIN_FAILS: dict[str, list[float]] = {}
+_LOGIN_WINDOW = 300.0
+_LOGIN_MAX = 6
+
+
+def _login_recent_fails(username: str) -> int:
+    now = time.monotonic()
+    fails = [t for t in _LOGIN_FAILS.get(username, []) if now - t < _LOGIN_WINDOW]
+    _LOGIN_FAILS[username] = fails
+    return len(fails)
+
+
+def _record_login_fail(username: str) -> None:
+    _LOGIN_FAILS.setdefault(username, []).append(time.monotonic())
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -82,10 +129,21 @@ def login():
         return RedirectResponse("/")
 
     def attempt():
-        if password.value and USERS.get(username.value) == password.value:
-            app.storage.user.update({"username": username.value, "authenticated": True})
+        user = (username.value or "").strip()
+        if _login_recent_fails(user) >= _LOGIN_MAX:
+            ui.notify("Too many attempts — wait a few minutes and try again.", color="negative")
+            return
+        # Timing-safe compare so response time doesn't leak whether the username
+        # exists or how much of the password matched.
+        expected = USERS.get(user, "")
+        ok = bool(password.value) and bool(expected) and \
+            secrets.compare_digest(str(password.value), str(expected))
+        if ok:
+            _LOGIN_FAILS.pop(user, None)
+            app.storage.user.update({"username": user, "authenticated": True})
             ui.navigate.to(app.storage.user.get("referrer_path", "/"))
         else:
+            _record_login_fail(user)
             ui.notify("Invalid credentials", color="negative")
 
     with ui.card().classes("absolute-center w-80 items-stretch"):
@@ -206,17 +264,21 @@ def bench_for(case_no: str, meta: dict) -> list[str]:
     so each judgment is parsed at most once per process."""
     if case_no in _BENCH_CACHE:
         return _BENCH_CACHE[case_no]
-    bench: list[str] = []
+    parsed: list[str] = []
     fn = meta.get("filename")
     if fn:
         pdf = JUDGE_DIR / fn
         if pdf.exists():
             try:
-                bench = extract_bench(str(pdf))
+                parsed = extract_bench(str(pdf))
             except Exception:
-                bench = []
-    if not bench:
-        bench = [j for j in (meta.get("judges") or []) if str(j).strip()]
+                parsed = []
+    # The scrape records only the *authoring* judge; the parsed coram (front
+    # matter + signature block) records the concurring judges but sometimes
+    # omits the author (who signs by role, not name). Merge both, surname-deduped,
+    # so a 3- or 5-judge bench is complete even when each source alone is partial.
+    meta_judges = [j for j in (meta.get("judges") or []) if str(j).strip()]
+    bench = merge_benches(parsed, meta_judges) if parsed else meta_judges
     _BENCH_CACHE[case_no] = bench
     return bench
 
@@ -249,21 +311,15 @@ def cases_by_keyword(area: str) -> list[dict]:
 _JUSTICES = None
 _AREAS = None
 _BY_YEAR = None
-_NORM: dict[str, str] = {}
 
 
 def distinct_justices() -> list[str]:
+    """Deduped justice display names — one option per justice (variant spellings
+    merged in src.store.justices_grouped)."""
     global _JUSTICES
     if _JUSTICES is None:
-        con = _con()
-        names: set[str] = set()
-        for (j,) in con.execute("SELECT judges FROM judgements WHERE judges IS NOT NULL AND judges!='[]'"):
-            for n in _jl(j):
-                n = n.strip()
-                if n:
-                    names.add(n)
-        con.close()
-        _JUSTICES = sorted(names)
+        from src.store import distinct_justices as _store_distinct_justices
+        _JUSTICES = _store_distinct_justices()
     return _JUSTICES
 
 
@@ -318,26 +374,47 @@ def judgements_by_year_month() -> dict[str, dict[str, list]]:
     return _BY_YEAR_MONTH
 
 
+def _available_years() -> list[str]:
+    """Years present in the corpus (newest first) — options for the Year filter."""
+    return sorted((y for y in judgements_by_year() if y != "Undated"), reverse=True)
+
+
 def find_case(cited: str):
-    global _NORM
-    if not _NORM:
-        con = _con()
-        _NORM = {re.sub(r"[^a-z0-9]", "", cn.lower()): cn for (cn,) in con.execute("SELECT case_no FROM judgements")}
-        con.close()
-    key = re.sub(r"[^a-z0-9]", "", (cited or "").lower())
-    if key in _NORM:
-        return _NORM[key]
-    for k, cn in _NORM.items():
-        if len(k) >= 9 and k in key:
-            return cn
-    return None
+    """High-confidence citation -> corpus case_no (number-based; see
+    src.store.resolve_citation). Party-name guessing is intentionally avoided."""
+    return resolve_citation(cited)
+
+
+def _safe_username() -> str:
+    """Logged-in username, tolerant of a dropped/changed client session.
+
+    A breakdown runs ~1-2 min via run.io_bound; if the websocket reconnects in
+    that window the per-session user storage is gone and reading it raises
+    'user storage ... should be created before accessing it'. Falling back to
+    'anonymous' keeps the post-await re-render from crashing — which is what left
+    the 'Analysing…' spinner stuck forever."""
+    try:
+        return app.storage.user.get("username", "anonymous")
+    except Exception:
+        return "anonymous"
+
+
+def _web_search_url(query: str) -> str:
+    """A Google search URL — the open-web fallback for any citation, Act, or
+    constitutional article not in the local corpus, so it can still be looked up
+    and cited from the original source."""
+    from urllib.parse import quote_plus
+    return "https://www.google.com/search?q=" + quote_plus((query or "").strip())
 
 
 HEAD_CSS = """
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
 <style>
+  /* Theme: inspired by rechtspraak.nl / the Dutch Rijkshuisstijl —
+     hemelblauw #01689b (primary), donkerblauw #154273 (headings), and a
+     light governmental gray page. Flat, squared, generous white space. */
   body {
-    background: #f8f9fa;
+    background: #f3f3f3;
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   .case-title {
@@ -347,7 +424,7 @@ HEAD_CSS = """
     font-size: 0.75rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #5f6368; /* Google Gray */
+    color: #154273; /* donkerblauw */
     font-weight: 700;
     margin-bottom: 4px;
   }
@@ -360,7 +437,9 @@ HEAD_CSS = """
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #1a73e8; /* Google Blue */
+    color: #154273; /* donkerblauw heading */
+    border-left: 3px solid #01689b; /* hemelblauw accent — the rechtspraak.nl signature */
+    padding-left: 8px;
     margin-top: 1.2rem;
     margin-bottom: 0.4rem;
   }
@@ -475,7 +554,8 @@ _TREAT_COLOR = {"Distinguished": "orange", "Overruled": "red", "Applied": "green
 
 def build_workspace(demo: bool = False):
     ui.add_head_html(HEAD_CSS)
-    ui.colors(primary="#1a73e8", secondary="#00796b")
+    # Rechtspraak.nl / Rijkshuisstijl palette: hemelblauw primary, donkerblauw secondary.
+    ui.colors(primary="#01689b", secondary="#154273")
     ui.dark_mode().disable()
     state = {"case": None, "page": None, "chat_open": False, "workspace_active": False}
     containers = {"bookmarks": None}
@@ -484,7 +564,7 @@ def build_workspace(demo: bool = False):
         if not containers["bookmarks"]:
             return
         containers["bookmarks"].clear()
-        username = app.storage.user.get("username", "anonymous")
+        username = _safe_username()
         saved = get_bookmarks(username)
         if not saved:
             return
@@ -600,23 +680,61 @@ def build_workspace(demo: bool = False):
         dialog.open()
 
     async def gen_breakdown(cn):
-        client = breakdown_pane.client
         breakdown_pane.clear()
         with breakdown_pane:
             ui.label("Breakdown").classes("pane-head")
             with ui.row().classes("items-center gap-2 mt-3"):
                 ui.spinner(size="lg")
                 ui.label("Analysing with the local model… (~1–2 min)").classes("text-sm")
+        if state.get("bd_pending") == cn:
+            return  # already generating this case
+        state["bd_pending"] = cn
+        state.pop("bd_error", None)
+        # Generate in a worker thread. analyze_case caches to the DB — and the cache
+        # write completes even if THIS client's websocket drops during the wait (the
+        # thread keeps running). _finish_breakdown renders now if we're still
+        # connected; the _poll_breakdown timer is the backstop that renders from
+        # cache after a drop, so the spinner can't get stuck.
+        from src.analyze import analyze_case
+        state.pop("bd_fresh", None)
         try:
-            from src.analyze import analyze_case
-            await run.io_bound(analyze_case, cn)
+            ca = await run.io_bound(analyze_case, cn, True)  # force: a Regenerate must re-run
+            q = ca.quality()
+            # Hollow results aren't cached (so the next open re-attempts), so stash
+            # this run in session state — render_breakdown shows it with a warning.
+            state["bd_fresh"] = (cn, ca.model_dump(mode="json"), q)
         except Exception as e:  # noqa: BLE001
+            print(f"Breakdown failed for {cn}: {e}")
+            state["bd_error"] = (cn, str(e))
+        _finish_breakdown(cn)
+
+    def _finish_breakdown(cn):
+        if state.get("bd_pending") != cn:
+            return  # already finished — avoid a double render from the timer
+        state["bd_pending"] = None
+        err = state.get("bd_error")
+        if err and err[0] == cn:
+            state.pop("bd_error", None)
             try:
-                client.outbox.enqueue_message('notify', {'message': f"Breakdown failed: {e}", 'type': 'negative'}, client.id)
+                ui.notify(f"Breakdown failed: {err[1]}", type="negative")
             except Exception:
-                print(f"Breakdown failed: {e}")
-        finally:
-            render_breakdown()
+                pass
+        if state.get("case") and state["case"][0] == cn:
+            try:
+                render_breakdown()
+            except Exception as e:  # noqa: BLE001
+                print(f"[gen_breakdown] render skipped: {e}")
+
+    def _poll_breakdown():
+        """Per-client 2 s timer: if the pending breakdown has finished (cached) or
+        failed, render it — covers the case where this client dropped mid-wait so the
+        awaited render above never ran."""
+        cn = state.get("bd_pending")
+        if not cn:
+            return
+        if (state.get("bd_error") or (None,))[0] == cn or get_breakdown(cn) \
+                or (state.get("bd_fresh") or (None,))[0] == cn:
+            _finish_breakdown(cn)
 
     def call_chatbot_api(cn, query):
         from src.config import REPO_ROOT, settings
@@ -766,7 +884,7 @@ def build_workspace(demo: bool = False):
             bench_str = ", ".join(bench) if bench else "Bench information not available in source"
             authoring_str = ", ".join(authoring_judges) if authoring_judges else "Authoring judge not specified"
             
-            username = app.storage.user.get("username", "anonymous")
+            username = _safe_username()
             bookmarked = is_bookmarked(username, cn)
 
             # --- Google Material Header Card ---
@@ -814,7 +932,23 @@ def build_workspace(demo: bool = False):
                 ui.label("Keywords").classes("text-[10px] uppercase font-bold tracking-wider text-gray-400 mt-2 pl-1")
                 chips(m["keywords"][:14], "blue-9")
 
-            bd = get_breakdown(cn)
+            # Prefer a just-generated result (incl. an uncached hollow one) for
+            # this case; otherwise the cached breakdown from the DB.
+            fresh = state.get("bd_fresh")
+            quality = None
+            if fresh and fresh[0] == cn:
+                bd, quality = fresh[1], fresh[2]
+            else:
+                bd = get_breakdown(cn)
+            if quality and quality.get("hollow"):
+                with ui.card().classes("w-full p-3 mt-2 mb-1").style("border-radius: 10px; border: 1px solid #f0c36d; background: #fff8e6; box-shadow: none;"):
+                    with ui.row().classes("items-center gap-2 no-wrap"):
+                        ui.icon("warning_amber", color="orange-9", size="20px")
+                        with ui.column().classes("gap-0.5"):
+                            ui.label("Low-confidence analysis").classes("text-xs font-bold text-orange-9")
+                            ui.label(f"The model returned mostly placeholders ({quality['filled']}/{quality['total']} sections filled) — it likely could not digest this judgment. This result was NOT saved; try Regenerate.").classes("text-[11px] text-gray-600 leading-snug")
+                    if not demo:
+                        ui.button("Regenerate Analysis", on_click=lambda: gen_breakdown(cn)).props("flat dense color=orange-9 icon=refresh").classes("text-xs mt-1")
             if not bd:
                 # Basic metadata fallback
                 with ui.card().classes("w-full p-4 mt-2").style("border-radius: 12px; border: 1px solid #dadce0; box-shadow: none;"):
@@ -858,20 +992,26 @@ def build_workspace(demo: bool = False):
                     sec("Citations & Distinctions")
                     for p in bd["precedent_index"][:12]:
                         cited, tr = p.get("cited_case", ""), p.get("treatment", "")
-                        target = find_case(cited)
+                        if not cited:
+                            continue
+                        target = find_case(cited)  # resolves to a case in the repository, if present
                         with ui.row().classes("items-center gap-2 py-1 no-wrap pl-2"):
                             if tr and tr != NOT_AVAILABLE:
                                 ui.badge(tr, color="blue-2" if tr in ("Applied", "Followed") else "amber-2", text_color="grey-9").classes("text-[10px] px-2 py-0.5 rounded")
                             if target:
                                 ui.link(cited, "#").classes("text-xs font-semibold no-underline text-primary").on("click", lambda t=target: open_case(t))
+                                ui.icon("open_in_new", size="13px").classes("text-primary flex-shrink-0").tooltip("Open this judgement in the library")
                             else:
-                                ui.label(cited).classes("text-xs text-gray-700")
+                                ui.link(cited, _web_search_url(cited), new_tab=True).classes("text-xs font-semibold no-underline text-gray-700 hover:text-primary").tooltip("Not in corpus — search the web")
+                                ui.icon("travel_explore", size="13px").classes("text-gray-400 flex-shrink-0")
                 
                 leg = list(dict.fromkeys((m.get("legislation") or []) + (bd.get("legislation_cited") or [])))
                 if leg:
                     sec("Legislation Cited")
-                    for s in leg[:10]:
-                        ui.label(f"• {s}").classes("body-text pl-2 mb-1")
+                    for s in leg[:12]:
+                        with ui.row().classes("items-center gap-1.5 py-0.5 no-wrap pl-2"):
+                            ui.icon("article", size="15px").classes("text-gray-400 flex-shrink-0")
+                            ui.link(s, _web_search_url(s + " Sri Lanka"), new_tab=True).classes("text-xs font-medium text-primary no-underline hover:underline").tooltip("Search the web for this Act / Article")
                 
                 sec("Final Order")
                 ui.label(bd.get("final_order") or "—").classes("body-text mb-2")
@@ -969,65 +1109,122 @@ def build_workspace(demo: bool = False):
                 cn = h["case_no"]
                 dt = h.get("date", "")
                 snip = h.get("snippet", "")
+                why = h.get("why", "")
                 with ui.card().classes("w-full p-3 mb-2 cursor-pointer hover:shadow-md transition-shadow duration-200").on("click", lambda c=cn: open_case(c)).style("border-radius: 8px; border: 1px solid #e8eaed; box-shadow: none;"):
                     with ui.row().classes("justify-between items-center w-full no-wrap"):
                         ui.label(cn).classes("text-xs font-bold text-primary truncate").style("max-width: 70%;")
-                        if dt:
-                            ui.badge(dt[:4], color="blue-1", text_color="primary").classes("text-[10px] px-2 py-0.5").style("border-radius: 4px; box-shadow: none;")
+                        with ui.row().classes("items-center gap-1 no-wrap"):
+                            if why == "semantic":
+                                ui.badge("✦ AI", color="purple-1", text_color="deep-purple").classes("text-[10px] px-2 py-0.5").style("border-radius: 4px; box-shadow: none;").tooltip("Semantically related — the exact words may not appear")
+                            elif why == "broad":
+                                ui.badge("partial", color="grey-3", text_color="grey-8").classes("text-[10px] px-2 py-0.5").style("border-radius: 4px; box-shadow: none;").tooltip("Matches some of your search terms")
+                            if dt:
+                                ui.badge(dt[:4], color="blue-1", text_color="primary").classes("text-[10px] px-2 py-0.5").style("border-radius: 4px; box-shadow: none;")
                     if snip:
                         ui.label(snip).classes("text-[11px] text-gray-600 mt-1 line-clamp-2")
 
-    def run_search(term):
-        term = (term or "").strip()
-        if not term:
+    # ---- combinable filters: Justice · legal area · year · month · search ---- #
+    _FILTER_ICON = {"judge": "gavel", "area": "category", "year": "event",
+                    "month": "calendar_month", "query": "search"}
+
+    def current_filters() -> dict:
+        """Live value of every facet control (None when unset)."""
+        return {
+            "judge": (judge_sel.value or None),
+            "area": (area_sel.value or None),
+            "year": (year_sel.value or None),
+            "month": (month_sel.value or None),
+            "query": ((q.value or "").strip() or None),
+        }
+
+    def render_active_filters(active):
+        active_filters.clear()
+        if not active:
+            return
+        with active_filters:
+            ui.label("Filters:").classes("text-[10px] uppercase font-bold tracking-wider text-gray-400 mr-1 self-center")
+            for k, v in active:
+                disp = f'"{v}"' if k == "query" else (" · ".join(v) if isinstance(v, list) else str(v))
+                with ui.row().classes("items-center gap-0.5 bg-blue-1 rounded-full pl-2 pr-0.5 py-0.5 no-wrap"):
+                    ui.icon(_FILTER_ICON.get(k, "filter_alt"), size="13px").classes("text-primary")
+                    ui.label(disp).classes("text-[10px] font-semibold text-primary truncate").style("max-width: 110px;")
+                    ui.button(icon="close", on_click=lambda key=k: clear_one(key)).props("flat round dense size=xs color=primary")
+
+    def clear_one(key):
+        state["_resetting"] = True
+        if key == "query":
+            q.value = ""
+        elif key == "judge":
+            judge_sel.value = []          # multi-select clears to an empty list
+        else:
+            {"area": area_sel, "year": year_sel, "month": month_sel}[key].value = None
+        state["_resetting"] = False
+        apply_filters()
+
+    def apply_filters(deep: bool = False):
+        """Re-run the AND-combined facet query; repaint results + active-filter chips.
+        deep=True (Enter / ✦ button) also merges AI semantic matches once the
+        embedder is warm — typing stays on the fast FTS path."""
+        if state.get("_resetting"):
+            return
+        f = current_filters()
+        active = [(k, v) for k, v in f.items() if v]
+        render_active_filters(active)
+        if not active:
             show_tree()
             return
         state["workspace_active"] = True
         update_workspace_visibility()
-        hits = keyword_search(term, 80)
-        show_results(hits, f'{len(hits)} results · "{term}"')
+        deep = deep and bool(f.get("query")) and embedder_ready()
+        hits = combined_search(**f, semantic=deep, limit=200)
+        pretty = " · ".join((f'"{v}"' if k == "query" else (" / ".join(v) if isinstance(v, list) else str(v))) for k, v in active)
+        if deep:
+            pretty += "  ·  ✦ deep"
+        show_results(hits, f"{pretty}  ·  {len(hits)} cases")
+
+    def reset_controls_silently():
+        state["_resetting"] = True
+        judge_sel.value = []             # multi-select resets to an empty list
+        for ctrl in (area_sel, year_sel, month_sel):
+            ctrl.value = None
+        q.value = ""
+        state["_resetting"] = False
+
+    def set_area_quick(area):
+        """A quick-filter chip just sets the area facet (combines with the rest)."""
+        area_sel.value = area  # fires on_change -> apply_filters
 
     def goto(term):
-        """Jump the Library to a topic/keyword (clicked from the breakdown)."""
-        q.value = term
-        run_search(term)
+        """Jump the Library to a topic / keyword / Act clicked in the breakdown."""
+        reset_controls_silently()
+        q.value = term or ""
+        apply_filters()
         set_active("library")  # mobile: show the related results
 
-    def filter_judge(name):
-        if not name:
-            show_tree()
-            return
-        state["workspace_active"] = True
-        update_workspace_visibility()
-        hits = cases_by_judge(name)
-        show_results(hits, f"Justice {name} · {len(hits)} cases")
-
-    def filter_area(area):
-        if not area:
-            show_tree()
-            return
-        state["workspace_active"] = True
-        update_workspace_visibility()
-        hits = area_search(area)
-        show_results(hits, f"{area} · {len(hits)} cases")
-
     def reset():
-        q.value = ""
+        reset_controls_silently()
+        render_active_filters([])
         show_tree()
 
     # ------------------------------ layout -------------------------------- #
-    with ui.header().classes("items-center justify-between bg-white text-gray-900 border-b shadow-none").style("border-color: #dadce0; height: 56px;"):
+    with ui.header().classes("items-center justify-between text-white shadow-none").style("background: #154273; border-bottom: 3px solid #01689b; height: 56px;"):
         # Left side containing AI Active and Logout/Login
         with ui.row().classes("items-center gap-3"):
             if demo:
-                ui.badge("DEMO · read-only", color="orange").classes("px-3 py-1 text-xs font-semibold").style("border-radius: 6px; box-shadow: none;")
-                ui.button("Log in", on_click=lambda: ui.navigate.to("/login")).props("flat dense color=primary").classes("text-xs font-semibold")
+                ui.badge("DEMO · read-only", color="orange").classes("px-3 py-1 text-xs font-semibold").style("border-radius: 2px; box-shadow: none;")
+                ui.button("Log in", on_click=lambda: ui.navigate.to("/login")).props("flat dense color=white").classes("text-xs font-semibold")
             else:
-                ui.badge("A.I. Active", color="green").classes("px-3 py-1 text-xs font-semibold").style("border-radius: 6px; box-shadow: none;")
-                ui.button(icon="logout", on_click=lambda: (app.storage.user.clear(), ui.navigate.to("/login"))).props("flat round dense color=grey-7").classes("hover:bg-gray-100")
-        
-        # Middle title "ROS" styled fancy
-        ui.label("ROS").classes("absolute-center text-2xl font-bold").style("font-family: 'Lora', Georgia, serif; letter-spacing: 0.25em; color: #0f2d59;")
+                ui.badge("A.I. Active", color="green").classes("px-3 py-1 text-xs font-semibold").style("border-radius: 2px; box-shadow: none;")
+                ui.button(icon="logout", on_click=lambda: (app.storage.user.clear(), ui.navigate.to("/login"))).props("flat round dense color=white").classes("hover:bg-white/10")
+
+        # Middle wordmark — white on the navy government band (rechtspraak.nl feel)
+        ui.label("ROS").classes("absolute-center text-3xl font-bold").style("font-family: 'Lora', Georgia, serif; letter-spacing: 0.25em; color: #ffffff;")
+
+        # Right side — Ingestion / Extraction portal (authed tool)
+        if not demo:
+            ui.button("Extract", icon="document_scanner",
+                      on_click=lambda: ui.navigate.to("/extractor")) \
+                .props("unelevated dense color=white text-color=primary").classes("text-xs font-semibold")
 
     # mobile-only tab switcher (hidden on desktop via CSS)
     tab_btns: dict = {}
@@ -1038,9 +1235,9 @@ def build_workspace(demo: bool = False):
 
     panes_row = ui.row().classes("panes-row w-full no-wrap gap-3 p-3 bg-gray-100")
     with panes_row:
-        pdf_pane = ui.column().classes("pane w-2/5 h-full overflow-auto p-4 bg-white border rounded-xl shadow-sm")
-        breakdown_pane = ui.column().classes("pane w-2/5 h-full overflow-auto p-4 bg-white border rounded-xl shadow-sm")
-        library = ui.column().classes("pane w-1/5 h-full overflow-auto p-4 bg-white border rounded-xl shadow-sm gap-3")
+        pdf_pane = ui.column().classes("pane w-2/5 h-full overflow-auto p-4 bg-white border rounded shadow-sm")
+        breakdown_pane = ui.column().classes("pane w-2/5 h-full overflow-auto p-4 bg-white border rounded shadow-sm")
+        library = ui.column().classes("pane w-1/5 h-full overflow-auto p-4 bg-white border rounded shadow-sm gap-3")
         with library:
             # Welcome header (visible only in welcome state)
             welcome_header = ui.column().classes("w-full items-center gap-2 mb-6")
@@ -1055,24 +1252,35 @@ def build_workspace(demo: bool = False):
             containers["bookmarks"] = ui.column().classes("w-full mb-1")
             
             # Google Search Input style
-            q = ui.input(placeholder="Search parties, phrases, case no…",
-                         on_change=lambda e: run_search(e.value)).props("rounded outlined dense clearable").classes("w-full")
+            q = ui.input(placeholder='Search parties, case no, RDA, "exact phrase"…',
+                         on_change=lambda e: apply_filters()).props("rounded outlined dense clearable").classes("w-full")
             with q.add_slot('prepend'):
                 ui.icon("search").classes("text-gray-400")
-            q.on("keydown.enter", lambda: run_search(q.value))
+            with q.add_slot('append'):
+                ui.button(icon="auto_awesome", on_click=lambda: apply_filters(deep=True)) \
+                    .props("flat round dense color=primary") \
+                    .tooltip("Deep search — also finds semantically related cases (or press Enter)")
+            q.on("keydown.enter", lambda: apply_filters(deep=True))
             
             # Quick filter areas chips (horizontal scroll)
             ui.label("Quick Filters").classes("text-[10px] uppercase font-bold tracking-wider text-gray-400 mt-1")
             with ui.scroll_area().classes("w-full h-8 mb-1"):
                 with ui.row().classes("no-wrap gap-1"):
-                    popular_areas = ["Fundamental Rights", "Land & Property", "Contract", "Criminal Law", "Civil Procedure"]
+                    popular_areas = ["Fundamental Rights", "Land & Property", "Contract", "Criminal Law & Procedure", "Civil Procedure"]
                     for pa in popular_areas:
-                        ui.chip(pa, color="blue-1", on_click=lambda term=pa: filter_area(term)).props("outline clickable dense").classes("text-[10px] font-semibold text-primary")
+                        ui.chip(pa, color="blue-1", on_click=lambda term=pa: set_area_quick(term)).props("outline clickable dense").classes("text-[10px] font-semibold text-primary")
             
-            judge_sel = ui.select(distinct_justices(), label="By Justice", with_input=True, clearable=True,
-                                  on_change=lambda e: filter_judge(e.value)).props("outlined dense rounded").classes("w-full")
+            judge_sel = ui.select(distinct_justices(), label="By Justice (select one or more)", with_input=True,
+                                  multiple=True, clearable=True,
+                                  on_change=lambda e: apply_filters()).props("outlined dense rounded").classes("w-full")
             area_sel = ui.select(legal_areas(), label="By legal area", with_input=True, clearable=True,
-                                 on_change=lambda e: filter_area(e.value)).props("outlined dense rounded").classes("w-full")
+                                 on_change=lambda e: apply_filters()).props("outlined dense rounded").classes("w-full")
+            with ui.row().classes("w-full no-wrap gap-2"):
+                year_sel = ui.select(_available_years(), label="Year", with_input=True, clearable=True,
+                                     on_change=lambda e: apply_filters()).props("outlined dense rounded").classes("flex-1 min-w-0")
+                month_sel = ui.select(_MONTH_NAMES, label="Month", clearable=True,
+                                      on_change=lambda e: apply_filters()).props("outlined dense rounded").classes("flex-1 min-w-0")
+            active_filters = ui.row().classes("w-full items-center gap-1 mt-1").style("flex-wrap: wrap;")
             results = ui.column().classes("w-full")
 
     with ui.footer().classes("items-center justify-center bg-white border-t p-1 shadow-none").style("height: 30px; border-color: #dadce0;"):
@@ -1122,6 +1330,7 @@ def build_workspace(demo: bool = False):
     floating_chat_widget()
     update_workspace_visibility()
     set_active("library")  # default visible pane on mobile (desktop shows all 3)
+    ui.timer(2.0, _poll_breakdown)  # render a finished breakdown even if the client dropped mid-wait
 
 
 @ui.page("/", title="ROS", favicon="data/logos/logo_emblem.png")
@@ -1134,5 +1343,373 @@ def demo_page():
     build_workspace(demo=True)
 
 
+@ui.page("/extractor", title="Ingestion Portal", favicon="data/logos/logo_emblem.png")
+def extractor_page():
+    from metadata_extractor.extractor import run_extraction
+    from metadata_extractor.models import JudgmentMetadata
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    import io
+    import logging
+    
+    logger = logging.getLogger("metadata_extractor_ui")
+
+    # Check authorization first
+    if not app.storage.user.get("authenticated", False):
+        return RedirectResponse("/login")
+
+    # Page state
+    queue = {}
+    table_rows = []
+    results = []
+
+    def build_excel_bytes(extracted_records: list[dict]) -> bytes:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Registry Overview"
+        ws.views.sheetView[0].showGridLines = True
+        
+        headers = [
+            "Case Number", 
+            "Date of Judgment", 
+            "Appellants / Petitioners", 
+            "Respondents", 
+            "Judges", 
+            "Legislation Cited", 
+            "Keywords"
+        ]
+        ws.append(headers)
+        
+        font_family = "Segoe UI"
+        header_font = Font(name=font_family, size=11, bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="1A73E8", end_color="1A73E8", fill_type="solid")
+        
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.row_dimensions[1].height = 28
+        
+        data_font = Font(name=font_family, size=10)
+        thin_border = Border(
+            left=Side(style='thin', color='DADCE0'),
+            right=Side(style='thin', color='DADCE0'),
+            top=Side(style='thin', color='DADCE0'),
+            bottom=Side(style='thin', color='DADCE0')
+        )
+        align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        align_center = Alignment(horizontal="center", vertical="center")
+        
+        fill_even = PatternFill(start_color="F8F9FA", end_color="F8F9FA", fill_type="solid")
+        
+        for row_idx, record in enumerate(extracted_records, 2):
+            meta = record.get("metadata", {})
+            parties = meta.get("parties", {})
+            
+            appellants = ", ".join(parties.get("appellants_petitioners", [])) if isinstance(parties.get("appellants_petitioners"), list) else ""
+            respondents = ", ".join(parties.get("respondents", [])) if isinstance(parties.get("respondents"), list) else ""
+            judges = ", ".join(meta.get("judges", [])) if isinstance(meta.get("judges"), list) else ""
+            legislation = ", ".join(meta.get("legislation_cited", [])) if isinstance(meta.get("legislation_cited"), list) else ""
+            keywords = ", ".join(meta.get("keywords", [])) if isinstance(meta.get("keywords"), list) else ""
+            
+            row_data = [
+                meta.get("case_number", ""),
+                meta.get("date_of_judgment", ""),
+                appellants,
+                respondents,
+                judges,
+                legislation,
+                keywords
+            ]
+            ws.append(row_data)
+            ws.row_dimensions[row_idx].height = 24
+            
+            is_even = (row_idx % 2 == 0)
+            for col_idx in range(1, len(row_data) + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.font = data_font
+                cell.border = thin_border
+                if is_even:
+                    cell.fill = fill_even
+                
+                if col_idx in (1, 2):
+                    cell.alignment = align_center
+                else:
+                    cell.alignment = align_left
+                    
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                val = str(cell.value or "")
+                lines = val.split('\n')
+                for line in lines:
+                    if len(line) > max_len:
+                        max_len = len(line)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 40)
+            
+        bytes_io = io.BytesIO()
+        wb.save(bytes_io)
+        return bytes_io.getvalue()
+
+    # Dynamic styling helpers
+    ui.add_head_html("""
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <style>
+      body {
+        background: #f8f9fa;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+      }
+    </style>
+    """)
+
+    # Header Bar
+    with ui.header().classes("items-center justify-between bg-white text-gray-900 border-b shadow-none").style("border-color: #dadce0; height: 56px;"):
+        with ui.row().classes("items-center gap-3"):
+            ui.button(icon="arrow_back", on_click=lambda: ui.navigate.to("/")).props("flat round dense color=grey-7").classes("hover:bg-gray-100")
+            ui.label("Batch Ingestion Portal").classes("text-sm font-bold text-gray-800")
+        ui.label("ROS").classes("absolute-center text-3xl font-bold").style("font-family: 'Lora', Georgia, serif; letter-spacing: 0.25em; color: #0f2d59;")
+
+    # Main layout grid (Left: Settings + Upload, Right: Progress & Table)
+    with ui.row().classes("w-full no-wrap gap-4 p-4 items-start"):
+        
+        # Left Panel (Settings + Upload)
+        with ui.column().classes("w-1/3 gap-4"):
+            
+            # Settings Card
+            with ui.card().classes("w-full p-4").style("border-radius: 12px; border: 1px solid #dadce0; box-shadow: none;"):
+                ui.label("Extraction Settings").classes("text-xs font-bold text-gray-400 uppercase tracking-wider mb-2")
+                
+                # Default provider selection based on workspace settings
+                env_provider = "llamacpp" if settings.llm_provider.lower() in ("llamacpp", "llamacpp-gguf") else "openai"
+                provider_sel = ui.select(
+                    {"llamacpp": "Local GGUF (Llama.cpp)", "openai": "OpenAI / Groq API", "anthropic": "Anthropic Claude API"},
+                    value=env_provider,
+                    label="LLM Provider"
+                ).classes("w-full")
+                
+                # Model or GGUF Path
+                env_model = settings.llamacpp_model_path if env_provider == "llamacpp" else settings.llm_model
+                model_input = ui.input("Model or GGUF Path", value=env_model).classes("w-full")
+                
+                # Custom Base URL (Groq/Ollama/OpenRouter)
+                env_base_url = settings.openai_base_url if "openai" in settings.llm_provider.lower() else ""
+                base_url_input = ui.input("Custom API Base URL (Optional)", value=env_base_url, placeholder="e.g. https://api.groq.com/openai/v1").classes("w-full")
+                
+                # API Key (hidden by default)
+                apikey_input = ui.input("API Key (Optional)", password=True).classes("w-full")
+                
+                # Concurrency slider
+                ui.label("Parallel Processing Threads").classes("text-[10px] text-gray-500 font-semibold mt-2")
+                workers_slider = ui.slider(min=1, max=10, value=3).props("label label-always")
+
+                # Auto-change settings helper
+                def on_provider_change(e):
+                    if e.value == "llamacpp":
+                        model_input.value = settings.llamacpp_model_path
+                        base_url_input.value = ""
+                        apikey_input.value = ""
+                        base_url_input.disable()
+                        apikey_input.disable()
+                    elif e.value == "openai":
+                        model_input.value = settings.llm_model if "openai" in settings.llm_provider.lower() else "gpt-4o-mini"
+                        base_url_input.value = settings.openai_base_url if "openai" in settings.llm_provider.lower() else ""
+                        base_url_input.enable()
+                        apikey_input.enable()
+                    else:  # anthropic
+                        model_input.value = "claude-3-5-haiku-20241022"
+                        base_url_input.value = ""
+                        base_url_input.disable()
+                        apikey_input.enable()
+                        
+                provider_sel.on_value_change(on_provider_change)
+                # Run once initially
+                if env_provider == "llamacpp":
+                    base_url_input.disable()
+                    apikey_input.disable()
+
+            # Upload Card
+            with ui.card().classes("w-full p-4").style("border-radius: 12px; border: 1px solid #dadce0; box-shadow: none;"):
+                ui.label("Upload Documents").classes("text-xs font-bold text-gray-400 uppercase tracking-wider mb-2")
+                
+                async def handle_upload(e):
+                    name = e.file.name
+                    # Prevent duplicate file names in the active queue
+                    if any(r["filename"] == name for r in table_rows):
+                        ui.notify(f"File already in queue: {name}", color="warning")
+                        return
+                        
+                    content_bytes = await e.file.read()
+                    try:
+                        if name.lower().endswith(".pdf"):
+                            import fitz
+                            doc = fitz.open(stream=content_bytes, filetype="pdf")
+                            text = ""
+                            for i, page in enumerate(doc):
+                                text += f"\n===== Page {i+1} =====\n" + page.get_text()
+                        else:
+                            text = content_bytes.decode("utf-8", errors="ignore")
+                        
+                        queue[name] = text
+                        table_rows.append({"filename": name, "case_number": "—", "date": "—", "status": "Pending"})
+                        results_table.update()
+                        logger.info(f"File uploaded successfully: {name}")
+                        print(f"File uploaded successfully: {name}", flush=True)
+                        ui.notify(f"File successfully added to queue: {name}", color="positive")
+                    except Exception as err:
+                        logger.error(f"Failed to read file {name}: {err}")
+                        print(f"Failed to read file {name}: {err}", flush=True)
+                        ui.notify(f"Failed to read {name}: {err}", color="negative")
+                        
+                ui.upload(multiple=True, label="Drag & Drop Files (.txt, .pdf)", auto_upload=True, on_upload=handle_upload).classes("w-full")
+
+        # Right Panel (Queue & Progress Grid)
+        with ui.column().classes("w-2/3 gap-4"):
+            
+            # Actions & Stats Row
+            with ui.row().classes("w-full items-center justify-between p-4 bg-white border").style("border-radius: 12px; border-color: #dadce0;"):
+                with ui.row().classes("gap-2"):
+                    # Process Button
+                    async def start_ingestion():
+                        if not queue:
+                            ui.notify("Queue is empty. Upload some files first.", color="warning")
+                            return
+                            
+                        ingest_btn.props("disable")
+                        clear_btn.props("disable")
+                        export_btn.props("disable")
+                        
+                        # Set active state
+                        for r in table_rows:
+                            if r["status"] == "Pending":
+                                r["status"] = "Queued"
+                        results_table.update()
+                        
+                        from nicegui import run
+                        import asyncio
+                        
+                        max_workers = int(workers_slider.value)
+                        sem = asyncio.Semaphore(max_workers)
+                        
+                        async def process_file(fname, txt):
+                            row = next(r for r in table_rows if r["filename"] == fname)
+                            if not (row["status"] in ("Queued", "Pending", "Failed") or "Failed" in row["status"]):
+                                return None  # Skip already completed files
+                                
+                            async with sem:
+                                row["status"] = "Extracting..."
+                                results_table.update()
+                                
+                                try:
+                                    meta = await run.io_bound(
+                                        run_extraction,
+                                        text=txt,
+                                        provider=provider_sel.value,
+                                        model_or_path=model_input.value,
+                                        api_key=apikey_input.value or None,
+                                        base_url=base_url_input.value or None
+                                    )
+                                    row["case_number"] = meta.case_number
+                                    row["date"] = meta.date_of_judgment
+                                    row["status"] = "Completed"
+                                    
+                                    # Append to results list
+                                    # Remove old record if re-running
+                                    results[:] = [r for r in results if r["filepath"] != fname]
+                                    results.append({
+                                        "filepath": fname,
+                                        "metadata": meta.model_dump(mode="json")
+                                    })
+                                    return True
+                                except Exception as exc:
+                                    row["status"] = f"Failed: {exc}"
+                                    return False
+                                finally:
+                                    results_table.update()
+                        
+                        tasks = [process_file(fname, txt) for fname, txt in queue.items()]
+                        outcomes = await asyncio.gather(*tasks)
+                        
+                        valid_outcomes = [o for o in outcomes if o is not None]
+                        if not valid_outcomes:
+                            ui.notify("No new files to process.", color="info")
+                        else:
+                            success_count = sum(1 for o in valid_outcomes if o)
+                            fail_count = len(valid_outcomes) - success_count
+                            ui.notify(f"Completed: {success_count} succeeded, {fail_count} failed.", color="positive" if fail_count == 0 else "warning")
+                            
+                        ingest_btn.props(remove="disable")
+                        clear_btn.props(remove="disable")
+                        export_btn.props(remove="disable")
+                        
+                    ingest_btn = ui.button("Start Ingestion", icon="play_arrow", on_click=start_ingestion).props("color=primary rounded")
+                    
+                    # Clear Button
+                    def clear_queue():
+                        queue.clear()
+                        table_rows.clear()
+                        results.clear()
+                        results_table.update()
+                        ui.notify("Queue cleared", color="grey-7")
+                        
+                    clear_btn = ui.button("Clear Queue", icon="clear_all", on_click=clear_queue).props("flat rounded color=grey-7")
+                
+                # Export to Excel Button
+                def download_excel():
+                    if not results:
+                        ui.notify("No completed extractions to export. Run ingestion first.", color="warning")
+                        return
+                    try:
+                        xlsx_data = build_excel_bytes(results)
+                        ui.download(xlsx_data, "metadata_registry.xlsx")
+                        ui.notify("Excel spreadsheet generated successfully!", color="positive")
+                    except Exception as err:
+                        ui.notify(f"Excel generation failed: {err}", color="negative")
+                        
+                export_btn = ui.button("Export to Excel", icon="grid_on", on_click=download_excel).props("color=green rounded")
+
+            # Table Card
+            with ui.card().classes("w-full p-4").style("border-radius: 12px; border: 1px solid #dadce0; box-shadow: none;"):
+                ui.label("Extraction Queue").classes("text-xs font-bold text-gray-400 uppercase tracking-wider mb-2")
+                
+                columns = [
+                    {"name": "filename", "label": "File Name", "field": "filename", "align": "left"},
+                    {"name": "case_number", "label": "Case Number", "field": "case_number", "align": "center"},
+                    {"name": "date", "label": "Date of Judgment", "field": "date", "align": "center"},
+                    {"name": "status", "label": "Status", "field": "status", "align": "center"}
+                ]
+                
+                results_table = ui.table(columns=columns, rows=table_rows, row_key="filename").classes("w-full shadow-none border")
+
+
+# Pre-warm the local model in the background at startup so (a) the first breakdown
+# isn't slowed by a cold load and (b) two early requests can't race into the model
+# loader at once (the race that could wedge the shared-context lock). Non-fatal.
+def _prewarm_model():
+    import threading
+    def _load():
+        if settings.llm_provider.lower() == "llamacpp":
+            try:
+                from src.analyze import _get_llama
+                _get_llama()
+                print("[prewarm] local model ready")
+            except Exception as e:  # noqa: BLE001
+                print(f"[prewarm] model preload skipped: {e}")
+        # Then the semantic embedder (bge-m3) so deep search is instant; the two
+        # fit together in RAM (3B + bge-m3 — do NOT prewarm a 14B alongside).
+        try:
+            from src.store import warm_embedder
+            if warm_embedder():
+                print("[prewarm] semantic embedder ready")
+        except Exception as e:  # noqa: BLE001
+            print(f"[prewarm] embedder preload skipped: {e}")
+    threading.Thread(target=_load, name="model-prewarm", daemon=True).start()
+
+
+_prewarm_model()
+
 ui.run(host="127.0.0.1", port=8080, show=False, reload=False,
        storage_secret=STORAGE_SECRET, title="ROS", favicon="data/logos/logo_emblem.png")
+
