@@ -171,7 +171,8 @@ _BENCH_STOP = re.compile(
 _JUDGE_SUFFIX = re.compile(
     r"(?:,?\s*(?:P\.?C\.?|Q\.?C\.?|PC|QC))?"      # optional silk: PC / QC
     r"\s*,?\s*"
-    r"(?:C\.?\s*J\.?|A\.?\s*C\.?\s*J\.?|D\.?\s*C\.?\s*J\.?|J\.?)"  # CJ / ACJ / DCJ / J
+    r"(?:C\.?\s*J\.?|A\.?\s*C\.?\s*J\.?|D\.?\s*C\.?\s*J\.?|"  # CJ / ACJ / DCJ
+    r"CHIEF\s+JUSTICE|JUSTICE|J\.?)"                          # 'Chief Justice'/'Justice' spelled out, or J
     r"\s*$",
     re.IGNORECASE,
 )
@@ -187,23 +188,36 @@ _HONORIFIC_PREFIX = re.compile(
 
 
 def _clean_judge(raw: str) -> str | None:
-    """Normalise one candidate into 'Name, J.'-style, or None if it isn't a judge."""
+    """Normalise one candidate into 'Name, J.'-style, or None if it isn't a judge.
+
+    Accepts BOTH the suffix form ("Mahinda Samayawardhena, J.") and the modern
+    prefix form ("Hon. Justice Mahinda Samayawardhena" — title up front, no
+    trailing suffix), which recent SC judgments use for the coram."""
     name = raw.strip(" \t\r\n.,;:·•*->–—")
     name = re.sub(r"\s+", " ", name).strip()
     if not name:
         return None
     # Drop a leading numbering like "1." or "(i)".
     name = re.sub(r"^\(?\s*[0-9ivx]+\s*[.)]\s*", "", name, flags=re.IGNORECASE)
+    # A leading "Justice"/"Judge" title marks a judge even without a trailing suffix.
+    had_title = bool(re.match(
+        r"^(?:the\s+)?(?:hon(?:'?ble|ourable|orable)?\.?\s*)?(?:mr|mrs|ms|dr)?\.?\s*(?:justice|judge)\b",
+        name, re.IGNORECASE))
     name = _HONORIFIC_PREFIX.sub("", name).strip(" .,")
-    if not _JUDGE_SUFFIX.search(name):
+    has_suffix = bool(_JUDGE_SUFFIX.search(name))
+    if not (has_suffix or had_title):
         return None
     # Reject lines that are obviously not a person (too long / sentence-like).
     if len(name) > 70 or name.count(" ") > 8:
         return None
-    # Require at least one capitalised alphabetic name token before the suffix.
-    head = _JUDGE_SUFFIX.sub("", name).strip(" ,.")
+    head = _JUDGE_SUFFIX.sub("", name).strip(" ,.") if has_suffix else name
     if not re.search(r"[A-Za-z]{2,}", head):
         return None
+    if not has_suffix:
+        # prefix-only judge: require a plausible multi-token name, then normalise.
+        if head.count(" ") < 1:
+            return None
+        name = f"{name}, J."
     return name
 
 
@@ -240,6 +254,150 @@ def _split_candidates(block: str) -> list[str]:
     return parts
 
 
+# A panel may share ONE plural suffix — "A, B and C, JJ." — where only the last
+# name carries "JJ." and the earlier names have no suffix of their own.
+_PLURAL_SUFFIX = re.compile(r",?\s*(?:P\.?C\.?\s*,?\s*)?J\s*\.?\s*J\s*\.?\s*$", re.IGNORECASE)
+
+
+def _expand_plural_bench(block: str) -> list[str]:
+    """Expand the shared-'JJ.' coram form into individual judges, or [] if absent."""
+    text = re.sub(r"\s+", " ", block.replace("\n", " ")).strip().rstrip(".,") + "."
+    if not _PLURAL_SUFFIX.search(text):
+        return []
+    names_part = _PLURAL_SUFFIX.sub("", text).strip(" ,.")
+    out: list[str] = []
+    for nm in re.split(r"\s*(?:,|&|\band\b)\s*", names_part, flags=re.IGNORECASE):
+        nm = re.sub(r"^\(?\s*[0-9ivx]+\s*[.)]\s*", "", nm.strip(), flags=re.IGNORECASE)
+        nm = _HONORIFIC_PREFIX.sub("", nm).strip(" .,")
+        if re.search(r"[A-Za-z]{2,}", nm) and 2 <= len(nm) <= 50 and nm.count(" ") <= 6:
+            out.append(f"{nm}, J.")
+    return out if len(out) >= 2 else []
+
+
+def _judges_from_block(block: str) -> list[str]:
+    """Every judge in a coram window: shared-'JJ.' layout first, then
+    individual-suffix names; capped at a realistic 7-judge bench."""
+    plural = _expand_plural_bench(block)
+    if len(plural) >= 2:
+        return plural[:7]
+    out: list[str] = []
+    for cand in _split_candidates(block):
+        j = _clean_judge(cand)
+        if j and j not in out:
+            out.append(j)
+            if len(out) >= 7:
+                break
+    return out
+
+
+def _scan_judge_clusters(lines: list[str]) -> list[str]:
+    """Marker-less fallback: the largest run of adjacent judge-pattern lines (blank
+    lines ignored; a real non-judge line or a stop section ends the run). Catches
+    OCR'd captions whose 'Before:' marker was garbled. Needs >= 2 judges to count."""
+    best: list[str] = []
+    cur: list[str] = []
+    for ln in lines:
+        if _BENCH_STOP.match(ln):
+            if len(cur) > len(best):
+                best = cur
+            cur = []
+            continue
+        s = ln.strip()
+        if not s:
+            continue
+        if _clean_judge(s):
+            cur.append(_clean_judge(s))
+        else:
+            if len(cur) > len(best):
+                best = cur
+            cur = []
+    if len(cur) > len(best):
+        best = cur
+    out: list[str] = []
+    for j in best:
+        if j not in out:
+            out.append(j)
+    return out[:7] if len(out) >= 2 else []
+
+
+# --------------------------------------------------------------------------- #
+# Signature-block fallback (coram from the END of the judgment)                #
+# --------------------------------------------------------------------------- #
+# Many judgments (esp. FR cases) print NO "Before:" marker in the front matter —
+# the only complete record of the panel is the signature block at the very end,
+# where each judge signs above/below a role line and the concurring judges add
+# "I agree." We scan the tail for judge-pattern lines anchored to those cues.
+
+# A bare judicial-office line ("JUDGE OF THE SUPREME COURT", "CHIEF JUSTICE",
+# "PRESIDENT OF THE COURT OF APPEAL"). These sit next to a signature, but are
+# NOT themselves names — they anchor the scan and must be excluded as judges.
+_SIGN_ROLE = re.compile(
+    r"^[\s>*•\-]*"
+    r"(?:(?:THE\s+)?(?:ACTING\s+)?CHIEF\s+JUSTICE"
+    r"|(?:JUDGE|JUSTICE)\s+OF\s+THE\s+(?:SUPREME\s+COURT|COURT\s+OF\s+APPEAL|HIGH\s+COURT)"
+    r"|PRESIDENT\s+OF\s+THE\s+COURT\s+OF\s+APPEAL)"
+    r"\s*$",
+    re.IGNORECASE,
+)
+# A concurrence line — "I agree." / "I respectfully agree" / "I have read…".
+_SIGN_AGREE = re.compile(r"^[\s>*•\-]*I\s+(?:respectfully\s+)?(?:agree|concur|have\s+read)\b", re.IGNORECASE)
+
+
+def _scan_signature_block(lines: list[str]) -> list[str]:
+    """Coram from the end-of-judgment signatures: every judge-pattern line that
+    sits within a few lines of a signature cue (a role line or "I agree."),
+    deduped, capped at 7. Returns [] when the tail carries no signature cues, so
+    a judgment without a clear sign-off never produces spurious names."""
+    cue_idx = [i for i, ln in enumerate(lines) if _SIGN_ROLE.match(ln) or _SIGN_AGREE.match(ln)]
+    if not cue_idx:
+        return []
+    cues = set(cue_idx)
+    out: list[str] = []
+    for idx, ln in enumerate(lines):
+        s = ln.strip()
+        if not s or _SIGN_ROLE.match(ln):       # never treat a role line as a name
+            continue
+        # A signature cue within ±3 lines marks this as a signing judge (vs. an
+        # incidental "per Fernando, J." somewhere in the body).
+        if not any(0 < abs(c - idx) <= 3 for c in cues):
+            continue
+        j = _clean_judge(s)
+        if j and j not in out:
+            out.append(j)
+            if len(out) >= 7:
+                break
+    return out
+
+
+def _surname(name: str) -> str:
+    """Last alphabetic token of a judge name, lowercased — for surname-dedup."""
+    head = _JUDGE_SUFFIX.sub("", name).strip(" ,.")
+    head = re.sub(r"\b(?:PC|QC|P\.C\.|Q\.C\.)\b", "", head, flags=re.IGNORECASE)
+    toks = re.findall(r"[A-Za-z]{2,}", head)
+    return toks[-1].lower() if toks else name.strip().lower()
+
+
+def merge_benches(*benches: list[str]) -> list[str]:
+    """Union several judge lists, keeping the first occurrence and dropping later
+    entries that repeat a surname already seen (so "A.H.M.D. Nawaz" and
+    "Nawaz, J." collapse to one). Order: earlier lists first. Capped at 7."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for bench in benches:
+        for nm in bench:
+            nm = (nm or "").strip()
+            if not nm:
+                continue
+            sn = _surname(nm)
+            if sn in seen:
+                continue
+            seen.add(sn)
+            out.append(nm)
+            if len(out) >= 7:
+                return out
+    return out
+
+
 def extract_bench(pages_or_path) -> list[str]:
     """Parse the full panel of judges (the coram) from a judgment.
 
@@ -248,74 +406,95 @@ def extract_bench(pages_or_path) -> list[str]:
     printed, each normalised like ``"Mahinda Samayawardhena, J."``. Returns
     ``[]`` when no panel can be confidently identified — callers should then
     fall back to the scrape metadata.
+
+    Resolution order: (1) the front-matter "Before:/Coram:" panel, (2) the
+    end-of-judgment signature block, (3) a marker-less cluster of judge lines in
+    the front matter. The front and signature panels are merged (surname-deduped)
+    so a 3- or 5-judge coram is recovered even when one source is incomplete.
     """
-    # --- normalise input to a single search text (front matter only) ---------
+    # --- normalise input to front pages + tail pages -------------------------
+    tail_pages: list[str] = []
     if isinstance(pages_or_path, (list, tuple)):
         pages = list(pages_or_path)
+        if len(pages) > 3:
+            tail_pages = pages[-2:]
     elif isinstance(pages_or_path, Path) or (
         isinstance(pages_or_path, str)
         and pages_or_path.lower().endswith(".pdf")
         and Path(pages_or_path).exists()
     ):
+        # The coram lives in the front matter (pages 1-3) OR the signature block
+        # (last 1-2 pages). Read/OCR only those — never the whole long judgment.
         try:
-            pages = extract_pages(str(pages_or_path))
+            pages = []
+            with fitz.open(str(pages_or_path)) as doc:
+                n = doc.page_count
+
+                def _page_text(i: int) -> str:
+                    page = doc[i]
+                    t = page.get_text("text")
+                    if len(t.strip()) < 200:
+                        t = _ocr_page(page, "eng+sin+tam") or t
+                    return t
+
+                for i in range(min(3, n)):
+                    pages.append(_page_text(i))
+                # Tail: the last two pages, skipping any already read as front matter.
+                tail_idx = [i for i in (n - 2, n - 1) if i >= 3]
+                tail_pages = [_page_text(i) for i in tail_idx]
         except Exception:
             return []
     else:
         pages = [str(pages_or_path)]
 
-    # The coram is in the front matter; search the first two pages only.
-    text = "\n".join(str(p) for p in pages[:2])
-    if not text.strip():
-        return []
+    # The coram is in the front matter; a long multi-party caption can push it onto
+    # the 3rd page, so search the first three.
+    text = "\n".join(str(p) for p in pages[:3])
+    front_lines = text.splitlines() if text.strip() else []
 
-    lines = text.splitlines()
-    judges: list[str] = []
-
-    for idx, line in enumerate(lines):
+    front_panel: list[str] = []
+    for idx, line in enumerate(front_lines):
         m = _BENCH_MARKER.match(line)
         if not m:
             continue
-
-        # Collect the marker's own remainder plus the lines beneath it, until a
-        # clearly different section or a run of non-judge lines ends the panel.
-        block_lines: list[str] = []
+        # Take a WINDOW from the marker up to the next labelled section (Counsel,
+        # For the …, the parties, etc.) or ~15 lines. SC captions spread the panel
+        # across many blank lines, so we gather the whole window THEN extract — far
+        # more robust than the old line-by-line scan that stopped at the first gap.
+        window: list[str] = []
         remainder = line[m.end():].strip()
         if remainder:
-            block_lines.append(remainder)
-
-        misses = 0
-        for nxt in lines[idx + 1:]:
+            window.append(remainder)
+        nonblank = 1 if remainder else 0
+        for nxt in front_lines[idx + 1: idx + 41]:   # span blank-heavy captions (judges sit ~6 blanks apart)
             if _BENCH_STOP.match(nxt):
                 break
-            stripped = nxt.strip()
-            if not stripped:
-                # A blank line ends the block only once we already have names.
-                if block_lines and any(_clean_judge(c) for c in _split_candidates("\n".join(block_lines))):
+            window.append(nxt)
+            if nxt.strip():
+                nonblank += 1
+                if nonblank >= 9:              # enough for a 7-judge panel; stop before over-reaching
                     break
-                continue
-            block_lines.append(stripped)
-            # Stop early if we have collected a few non-judge lines in a row.
-            if _clean_judge(stripped) is None:
-                misses += 1
-                if misses >= 2:
-                    break
-            else:
-                misses = 0
-            # A panel is at most three judges; once we have them, stop.
-            got = [j for c in _split_candidates("\n".join(block_lines)) if (j := _clean_judge(c))]
-            if len(got) >= 3:
-                break
 
-        for cand in _split_candidates("\n".join(block_lines)):
-            j = _clean_judge(cand)
-            if j and j not in judges:
-                judges.append(j)
-
-        if judges:
+        front_panel = _judges_from_block("\n".join(window))
+        if front_panel:
             break  # first valid panel wins; ignore later "before" mentions
 
-    return judges
+    # The signature block (tail, with front matter as a fallback location for
+    # short judgments that signed on page 1-3).
+    sig_lines = "\n".join(str(p) for p in tail_pages).splitlines()
+    sig_panel = _scan_signature_block(sig_lines) if sig_lines else []
+    if not sig_panel and front_lines:
+        sig_panel = _scan_signature_block(front_lines)
+
+    # Merge the two authoritative sources (surname-deduped). The signature block
+    # lists every concurring judge; the "Before:" line gives presiding order.
+    merged = merge_benches(front_panel, sig_panel)
+    if merged:
+        return merged
+
+    # No marker and no signatures (e.g. OCR garbled both) — fall back to the
+    # largest run of adjacent judge-pattern lines in the front matter.
+    return _scan_judge_clusters(front_lines)
 
 
 # --------------------------------------------------------------------------- #

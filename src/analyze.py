@@ -17,8 +17,11 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import re
 import sys
+import threading
 
 from .config import REPO_ROOT, settings
 from .ingest import case_no_from_filename, extract_pages
@@ -27,20 +30,43 @@ from .schema import CaseAnalysis
 PROMPT_PATH = REPO_ROOT / "prompts" / "system_prompt.md"
 
 _LLAMA = None
+# Reentrant + timeout-guarded serialization of the single shared llama.cpp context.
+# RLock => a re-entrant acquire on the same thread can't self-deadlock; the timeout
+# => a stuck holder surfaces as a clear error instead of an infinite "Analysing…"
+# hang — while still preventing the concurrent-decode crash across threads.
+_LLAMA_LOCK = threading.RLock()
+_LLAMA_LOCK_TIMEOUT = 300  # seconds
+
+
+@contextlib.contextmanager
+def _llama_guard():
+    if not _LLAMA_LOCK.acquire(timeout=_LLAMA_LOCK_TIMEOUT):
+        raise RuntimeError("Local model is busy (lock timeout). Please retry in a moment.")
+    try:
+        yield
+    finally:
+        _LLAMA_LOCK.release()
 
 
 def _get_llama():
-    """Lazy-load a local GGUF via llama-cpp-python (cached for the process)."""
+    """Lazy-load a local GGUF via llama-cpp-python (cached for the process).
+
+    Double-checked under the lock so two concurrent first-time callers (e.g. a
+    chat and a breakdown firing together) can't each build a model and OOM this
+    18 GB machine — only the first constructs it; the rest reuse the singleton.
+    """
     global _LLAMA
     if _LLAMA is None:
-        from llama_cpp import Llama
+        with _llama_guard():
+            if _LLAMA is None:
+                from llama_cpp import Llama
 
-        _LLAMA = Llama(
-            model_path=settings.llamacpp_model_path,
-            n_ctx=settings.ollama_num_ctx,
-            n_gpu_layers=settings.llamacpp_gpu_layers,  # offload to Metal where available / configured
-            verbose=False,
-        )
+                _LLAMA = Llama(
+                    model_path=settings.llamacpp_model_path,
+                    n_ctx=settings.ollama_num_ctx,
+                    n_gpu_layers=settings.llamacpp_gpu_layers,  # offload to Metal where available / configured
+                    verbose=False,
+                )
     return _LLAMA
 
 
@@ -74,7 +100,11 @@ def _chat(system_text: str, user_text: str, max_tokens: int = 4096, json_mode: b
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        return llm.create_chat_completion(**kwargs)["choices"][0]["message"]["content"]
+        # Serialize: the shared context can only generate one completion at a
+        # time; concurrent calls (open /demo, or chat + breakdown) corrupt the
+        # KV cache or crash. Queued callers wait — fine, the model is single anyway.
+        with _llama_guard():
+            return llm.create_chat_completion(**kwargs)["choices"][0]["message"]["content"]
 
     # OpenAI-compatible: Ollama (local) or OpenAI
     from openai import OpenAI
@@ -114,11 +144,80 @@ def _chat(system_text: str, user_text: str, max_tokens: int = 4096, json_mode: b
     return resp.choices[0].message.content
 
 
+def _strip_trailing_commas(s: str) -> str:
+    return re.sub(r",(\s*[}\]])", r"\1", s)
+
+
+def _repair_json(s: str) -> str:
+    """Best-effort repair of the truncated/malformed JSON small local models emit:
+    balance brackets, close an unterminated string, drop a dangling trailing
+    key/comma — so a breakdown succeeds (Pydantic fills any missing fields) instead
+    of dying on a stray delimiter."""
+    out: list[str] = []
+    stack: list[str] = []
+    in_str = esc = False
+    for ch in s:
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+        elif ch in "{[":
+            stack.append(ch)
+            out.append(ch)
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+                out.append(ch)
+            # else: drop a stray closing bracket
+        else:
+            out.append(ch)
+    res = "".join(out)
+    if in_str:
+        res += '"'
+    res = res.rstrip()
+    res = re.sub(r",\s*$", "", res)
+    res = re.sub(r'"[^"]*"\s*:\s*$', "", res).rstrip()   # drop a dangling '"key":' with no value
+    res = re.sub(r",\s*$", "", res)
+    res = _strip_trailing_commas(res)
+    for ch in reversed(stack):
+        res += "}" if ch == "{" else "]"
+    return res
+
+
 def _extract_json(text: str) -> dict:
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
+    """Parse the model's JSON, repairing the malformed output small local models
+    produce (trailing commas, a value cut off at max_tokens, unterminated
+    strings/brackets) so a breakdown never dies on a delimiter error."""
+    start = text.find("{")
+    if start == -1:
         raise ValueError("No JSON object found in the model response.")
-    return json.loads(text[start : end + 1])
+    snippet = text[start:]
+    end = snippet.rfind("}")
+    base = snippet[: end + 1] if end != -1 else snippet
+    for cand in (base, _strip_trailing_commas(base), _repair_json(snippet)):
+        try:
+            obj = json.loads(cand)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+    try:  # deeper repair if the optional library is installed
+        from json_repair import repair_json
+
+        obj = repair_json(snippet, return_objects=True)
+        if isinstance(obj, dict) and obj:
+            return obj
+    except Exception:
+        pass
+    raise ValueError("Could not parse JSON from the model response.")
 
 
 def _fit_to_context(text: str, max_output: int = 4096) -> str:
@@ -134,13 +233,14 @@ def _fit_to_context(text: str, max_output: int = 4096) -> str:
     if provider == "llamacpp":
         try:
             llm = _get_llama()
-            toks = llm.tokenize(text.encode("utf-8", "ignore"), add_bos=False)
-            if len(toks) <= budget:
-                return text
-            head = int(budget * 0.6)
-            tail = budget - head - 40
-            sep = llm.tokenize(b"\n\n[... lengthy middle omitted to fit the model context ...]\n\n", add_bos=False)
-            return llm.detokenize(toks[:head] + sep + toks[-tail:]).decode("utf-8", "ignore")
+            with _llama_guard():  # tokenize/detokenize touch the shared model too
+                toks = llm.tokenize(text.encode("utf-8", "ignore"), add_bos=False)
+                if len(toks) <= budget:
+                    return text
+                head = int(budget * 0.6)
+                tail = budget - head - 40
+                sep = llm.tokenize(b"\n\n[... lengthy middle omitted to fit the model context ...]\n\n", add_bos=False)
+                return llm.detokenize(toks[:head] + sep + toks[-tail:]).decode("utf-8", "ignore")
         except Exception:
             pass
     budget_chars = int(budget * 3.5)  # ~chars/token fallback
@@ -160,8 +260,25 @@ def analyze_text(case_no: str, full_text: str) -> CaseAnalysis:
         "[Case No | Page:Para] using the page markers. Return ONLY the JSON.\n\n"
         f"=== JUDGMENT TEXT ===\n{full_text}"
     )
-    raw = _chat(PROMPT_PATH.read_text(), user, max_tokens=4096, json_mode=True)
-    return CaseAnalysis.model_validate(_extract_json(raw))
+    prompt = PROMPT_PATH.read_text()
+    last_err: Exception | None = None
+    best: CaseAnalysis | None = None
+    # Up to 2 passes. The first valid, non-hollow breakdown wins; otherwise we
+    # keep the most complete parse so a partial result still beats nothing.
+    for _ in range(2):
+        raw = _chat(prompt, user, max_tokens=4096, json_mode=True)
+        try:
+            ca = CaseAnalysis.model_validate(_extract_json(raw))
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+        if not ca.quality()["hollow"]:
+            return ca  # good enough — stop early
+        if best is None or ca.filled_core_count() > best.filled_core_count():
+            best = ca  # hollow, but remember the fullest one in case the retry is worse
+    if best is not None:
+        return best
+    raise last_err  # type: ignore[misc]
 
 
 def analyze_pdf(pdf_path: str) -> CaseAnalysis:
@@ -187,7 +304,12 @@ def analyze_case(case_no: str, force: bool = False) -> CaseAnalysis:
         raise FileNotFoundError(f"No indexed judgement found for {case_no!r}")
     ca = analyze_pdf(row[0])
     model = "llamacpp-gguf" if settings.llm_provider == "llamacpp" else settings.llm_model
-    store.save_analysis(con, case_no, ca.model_dump(mode="json"), f"{settings.llm_provider}:{model}")
+    # Quality gate: only cache a breakdown that actually digested the judgment.
+    # A hollow result (all-placeholder, like a failed extraction) is returned to
+    # the caller for display-with-warning but NOT persisted, so the next view
+    # re-attempts instead of serving the dud forever.
+    if not ca.quality()["hollow"]:
+        store.save_analysis(con, case_no, ca.model_dump(mode="json"), f"{settings.llm_provider}:{model}")
     return ca
 
 

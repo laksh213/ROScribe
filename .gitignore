@@ -33,3 +33,6 @@ models/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# NiceGUI — per-user session storage, regenerated at runtime
+.nicegui/

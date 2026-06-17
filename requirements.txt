@@ -1,6 +1,7 @@
 # --- LLM (pluggable; Ollama local by default) ---
 openai>=1.40            # talks to Ollama / any OpenAI-compatible endpoint
 anthropic>=0.40         # optional: only when LLM_PROVIDER=anthropic
+json-repair>=0.30       # repair malformed/truncated JSON from small local models
 
 # --- Scraper (Phase 1) — implemented & tested ---
 requests>=2.31
