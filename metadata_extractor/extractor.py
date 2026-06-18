@@ -11,15 +11,16 @@ from .models import JudgmentMetadata
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a judicial data registry officer. Extract only explicit facts from the provided Court of Appeal judgment of Sri Lanka.
+SYSTEM_PROMPT = """You are a judicial data registry officer. Extract only explicit facts from the provided Sri Lankan court judgment (typically a Supreme Court judgment).
 
 Follow these strict rules to ensure data integrity:
-1. **Case Number**: Extract the unique court reference/case number (e.g. CA/720/2020, CA (PHC) APN 53/18).
+1. **Case Number**: Extract the lead court reference exactly as printed on the cover page, copied verbatim from the document (e.g. an "SC Appeal No.", "SC FR", or "CA" style reference). Never output an example, placeholder, or guessed value. If several references appear (e.g. an SC number alongside the originating HC/LT numbers), use the deciding court's own primary reference.
 2. **Judges**: Extract the list of Justices on the panel. Keep their titles uniform (e.g. "L.T.B. Dehideniya, J.").
 3. **Date of Judgment**: Extract the delivery date. Format as YYYY-MM-DD if parseable (e.g. '2026-06-08'). If the date is missing or ambiguous, return it exactly as raw text from the document—do not invent it.
 4. **Parties**: Structure the Appellants/Petitioners and Respondents. Strip away long residential addresses or corporate descriptions (e.g. "John Doe of No. 23, Galle Road..." becomes "John Doe").
 5. **Legislation Cited**: Extract explicit statutes, acts, or sections mentioned (e.g. 'Section 68 of the Evidence Ordinance'). Do not assume or guess statutory links.
 6. **Keywords**: Generate 5 to 10 highly relevant, standardized legal keywords derived from the text context (e.g. 'Writ of Certiorari', 'Prescriptive Title', 'Wrongful Dismissal') to support consistent search indexing.
+7. **Authoring Judge**: Identify the SINGLE judge who actually wrote/delivered this judgment — their name appears at the very start of the opinion (before counsel and submissions are listed), typically as "<NAME>, J.", and they may be noted as delivering "the judgment of the Court". Output only that one name. If genuinely unclear, use the first judge listed.
 
 **IMPORTANT**: If a field is not explicitly present, return an empty list or null value. Do not hallucinate or guess any metadata."""
 
@@ -210,7 +211,14 @@ def run_extraction(text: str, provider: str, model_or_path: str, api_key: Option
         key = api_key or os.getenv("OPENAI_API_KEY")
         if not key and not base_url:
             raise ValueError("OPENAI_API_KEY must be provided or configured in .env")
+        if not key:
+            key = "dummy"
         return extract_metadata_openai(text, model_or_path, key, base_url)
+        
+    elif provider == "ollama":
+        base = base_url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434/v1"
+        key = api_key or "ollama"
+        return extract_metadata_openai(text, model_or_path, key, base)
         
     elif provider == "anthropic":
         key = api_key or os.getenv("ANTHROPIC_API_KEY")

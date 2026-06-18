@@ -11,10 +11,13 @@ class PartyDetails(BaseModel):
 
 class JudgmentMetadata(BaseModel):
     case_number: str = Field(
-        description="The unique court reference or case number (e.g., CA/720/2020, CA (PHC) APN 53/18)."
+        description="The lead court reference, copied verbatim from the judgment's cover page (e.g. an 'SC Appeal No.', 'SC FR', or 'CA' style reference). Never output an example or placeholder value — extract the actual number from the text."
     )
     judges: List[str] = Field(
         description="Names of the Honorable Justice(s) who delivered or sat on the judgment panel."
+    )
+    authoring_judge: str = Field(
+        description="The SINGLE Justice who wrote/delivered this judgment (its author) — their name appears at the very start of the opinion, before counsel and submissions are listed, often followed by 'delivered the judgment of the Court'. Output only that one name (e.g. 'Arjuna Obeyesekere, J.'). If genuinely unclear, use the first judge listed."
     )
     date_of_judgment: str = Field(
         description="The exact date the judgment was delivered. Output format must be YYYY-MM-DD if parseable, otherwise raw text from the document (e.g., '2026-06-08', '08th June 2026')."
